@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model Order {
+  id                Int      @id @default(autoincrement())
+  shopifyId         BigInt   @unique
+  shop              String
+  name              String?
+  email             String?
+  phone             String?
+  totalPrice        String?
+  currency          String?
+  financialStatus   String?
+  fulfillmentStatus String?
+  lineItems         Json?
+  customerName      String?
+  city              String?
+  bookingStatus        String?  @default("pending")
+  shipmentStatus       String?  @default("pending")
+  address              String?
+  trackingNumber       String?
+  courierName          String?
+  shopifyFulfillmentId String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model Settings {
+  id                  Int      @id @default(autoincrement())
+  shop                String   @unique
+  instaworldApiKey    String?
+  defaultWeight       Float?   @default(1)
+  defaultInstructions String?
+  shipperName         String?
+  shipperPhone        String?
+  shipperAddress      String?
+  shipperCity         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
