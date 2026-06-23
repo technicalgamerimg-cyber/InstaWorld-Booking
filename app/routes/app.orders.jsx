@@ -4,72 +4,17 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, apiVersion } from "../shopify.server";
 import db from "../db.server";
 import pLimit from "p-limit";
+import { createShipment } from "../utils/instaworld.server";
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
 
-  const response = await fetch(
-    `https://${session.shop}/admin/api/${apiVersion}/orders.json?status=any&limit=50`,
-    {
-      headers: {
-        "X-Shopify-Access-Token": session.accessToken,
-        "Content-Type": "application/json",
-      },
-    }
-  );
-  const { orders: shopifyOrders = [] } = await response.json();
-
-  for (const o of shopifyOrders) {
-    const customerName =
-      [o.shipping_address?.first_name, o.shipping_address?.last_name]
-        .filter(Boolean)
-        .join(" ") ||
-      [o.customer?.first_name, o.customer?.last_name]
-        .filter(Boolean)
-        .join(" ") ||
-      null;
-
-    const isFulfilled = o.fulfillment_status === "fulfilled";
-
-    await db.order.upsert({
-      where: { shopifyId: BigInt(o.id) },
-      update: {
-        name: o.name,
-        email: o.email,
-        phone: o.phone || o.shipping_address?.phone || null,
-        totalPrice: o.total_price,
-        currency: o.currency,
-        financialStatus: o.financial_status,
-        fulfillmentStatus: o.fulfillment_status,
-        lineItems: o.line_items,
-        customerName,
-        city: o.shipping_address?.city || null,
-        address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
-        ...(isFulfilled ? { bookingStatus: "booked" } : {}),
-      },
-      create: {
-        shopifyId: BigInt(o.id),
-        shop: session.shop,
-        name: o.name,
-        email: o.email,
-        phone: o.phone || o.shipping_address?.phone || null,
-        totalPrice: o.total_price,
-        currency: o.currency,
-        financialStatus: o.financial_status,
-        fulfillmentStatus: o.fulfillment_status,
-        lineItems: o.line_items,
-        customerName,
-        city: o.shipping_address?.city || null,
-        address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
-        bookingStatus: isFulfilled ? "booked" : "pending",
-      },
-    });
-  }
-
+  // Orders page is now a pure DB read — Shopify sync happens via webhooks (api.webhooks.jsx)
   const [orders, shopSettings] = await Promise.all([
     db.order.findMany({
+      where: { shop: session.shop },
       orderBy: { createdAt: "desc" },
       take: 50,
       select: {
@@ -105,12 +50,60 @@ export const loader = async ({ request }) => {
 
 // ─── Action ──────────────────────────────────────────────────────────────────
 
-const INSTAWORLD_BASE = "https://one-be.instaworld.pk/logistics/v1";
+const shopifyFetch = async (url, options) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
 export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = form.get("intent");
+
+  // Manual admin-triggered sync — the only path that calls the Shopify API on demand
+  if (intent === "syncOrders") {
+    const response = await shopifyFetch(
+      `https://${session.shop}/admin/api/${apiVersion}/orders.json?status=any&limit=50`,
+      { headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" } }
+    );
+    const { orders: shopifyOrders = [] } = await response.json();
+    for (const o of shopifyOrders) {
+      const customerName =
+        [o.shipping_address?.first_name, o.shipping_address?.last_name].filter(Boolean).join(" ") ||
+        [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(" ") ||
+        null;
+      await db.order.upsert({
+        where: { shopifyId: BigInt(o.id) },
+        update: {
+          shop: session.shop,
+          name: o.name, email: o.email,
+          phone: o.phone || o.shipping_address?.phone || null,
+          totalPrice: o.total_price, currency: o.currency,
+          financialStatus: o.financial_status, fulfillmentStatus: o.fulfillment_status,
+          lineItems: o.line_items, customerName,
+          city: o.shipping_address?.city || null,
+          address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
+        },
+        create: {
+          shopifyId: BigInt(o.id), shop: session.shop,
+          name: o.name, email: o.email,
+          phone: o.phone || o.shipping_address?.phone || null,
+          totalPrice: o.total_price, currency: o.currency,
+          financialStatus: o.financial_status, fulfillmentStatus: o.fulfillment_status,
+          lineItems: o.line_items, customerName,
+          city: o.shipping_address?.city || null,
+          address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
+          bookingStatus: "pending",
+        },
+      });
+    }
+    return { ok: true, synced: shopifyOrders.length };
+  }
 
   if (intent === "book") {
     const ids = JSON.parse(form.get("orderIds"));
@@ -120,17 +113,27 @@ export const action = async ({ request }) => {
 
     const shopSettings = await db.settings.findUnique({ where: { shop: session.shop } });
     if (!shopSettings?.instaworldApiKey) {
-      return { ok: false, error: "InstaWorld API key not configured. Go to Settings first." };
+      return { ok: false, failures: [{ reason: "InstaWorld API key not configured. Go to Settings first." }], succeeded: 0, failed: 1 };
     }
 
     const apiKey = shopSettings.instaworldApiKey;
     const defaultWeightKg = shopSettings.defaultWeight ?? 1;
     const weightKg = weightGrams !== null ? weightGrams / 1000 : defaultWeightKg;
 
-    // Fetch all orders in one query
-    const dbOrders = await db.order.findMany({ where: { id: { in: ids.map(Number) } } });
+    const dbOrders = await db.order.findMany({
+      where: { id: { in: ids.map(Number) }, shop: session.shop },
+      select: {
+        id: true, shopifyId: true, name: true, customerName: true, email: true,
+        phone: true, address: true, city: true, totalPrice: true, financialStatus: true,
+        lineItems: true, bookingStatus: true, trackingNumber: true,
+      },
+    });
 
     const bookOne = async (order) => {
+      if (order.bookingStatus === "booked" || order.trackingNumber) {
+        return { id: order.id, skipped: true };
+      }
+
       const nameParts = (order.customerName || "Customer").split(" ");
       const codAmount = customCod !== null
         ? customCod
@@ -162,11 +165,8 @@ export const action = async ({ request }) => {
         items,
       };
 
-      const res = await fetch(`${INSTAWORLD_BASE}/createShipment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      // createShipment has built-in retry (3 attempts) + 30s AbortController timeout
+      const res = await createShipment(payload);
       const result = await res.json();
 
       if (!result.tracking_number) {
@@ -174,70 +174,85 @@ export const action = async ({ request }) => {
         throw new Error(`${order.name || order.id}: ${msg}`);
       }
 
-      // Shopify fulfillment (non-fatal)
+      // Shopify fulfillment (non-fatal — DB is source of truth)
       let shopifyFulfillmentId = null;
+      let shopifyFulfillmentError = null;
+      let shopifyFulfillmentState = "pending";
       try {
-        const foRes = await fetch(
-          `https://${session.shop}/admin/api/${apiVersion}/orders/${order.shopifyId}/fulfillment_orders.json`,
-          { headers: { "X-Shopify-Access-Token": session.accessToken } }
-        );
-        const { fulfillment_orders = [] } = await foRes.json();
-        const openFOs = fulfillment_orders.filter((fo) => fo.status !== "closed" && fo.status !== "cancelled");
-        if (openFOs.length > 0) {
-          const fulfillRes = await fetch(
-            `https://${session.shop}/admin/api/${apiVersion}/fulfillments.json`,
-            {
+        const foUrl = `https://${session.shop}/admin/api/${apiVersion}/orders/${order.shopifyId}/fulfillment_orders.json`;
+        const foRes = await shopifyFetch(foUrl, { headers: { "X-Shopify-Access-Token": session.accessToken } });
+        if (!foRes.ok) {
+          const body = await foRes.text();
+          console.error(`[FO fetch] ${order.name} GET ${foUrl} → ${foRes.status}:`, body);
+          shopifyFulfillmentError = `HTTP ${foRes.status}: ${body}`;
+          shopifyFulfillmentState = "failed";
+        } else {
+          const { fulfillment_orders = [] } = await foRes.json();
+          const openFOs = fulfillment_orders.filter((fo) => fo.status !== "closed" && fo.status !== "cancelled");
+          if (openFOs.length > 0) {
+            const fulfillUrl = `https://${session.shop}/admin/api/${apiVersion}/fulfillments.json`;
+            const fulfillBody = {
+              fulfillment: {
+                line_items_by_fulfillment_order: openFOs.map((fo) => ({ fulfillment_order_id: fo.id })),
+                tracking_info: { number: result.tracking_number, company: result.courier || "InstaWorld" },
+                notify_customer: false,
+              },
+            };
+            const fulfillRes = await shopifyFetch(fulfillUrl, {
               method: "POST",
               headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" },
-              body: JSON.stringify({
-                fulfillment: {
-                  line_items_by_fulfillment_order: openFOs.map((fo) => ({ fulfillment_order_id: fo.id })),
-                  tracking_info: { number: result.tracking_number, company: result.courier || "InstaWorld" },
-                  notify_customer: false,
-                },
-              }),
+              body: JSON.stringify(fulfillBody),
+            });
+            const fulfillData = await fulfillRes.json();
+            if (fulfillData.fulfillment?.id) {
+              shopifyFulfillmentId = String(fulfillData.fulfillment.id);
+              shopifyFulfillmentState = "fulfilled";
+            } else {
+              const raw = fulfillData.errors;
+              const errDetail = Array.isArray(raw)
+                ? raw.map((e) => e.message || JSON.stringify(e)).join(", ")
+                : raw && typeof raw === "object"
+                  ? Object.entries(raw).map(([k, v]) => `${k}: ${v}`).join(", ")
+                  : raw ? String(raw) : "Unknown Shopify fulfillment error";
+              console.error(`[Fulfillment create] ${order.name} POST ${fulfillUrl} → ${fulfillRes.status}:`, errDetail);
+              shopifyFulfillmentError = raw ?? errDetail;
+              shopifyFulfillmentState = "failed";
             }
-          );
-          const fulfillData = await fulfillRes.json();
-          shopifyFulfillmentId = String(fulfillData.fulfillment?.id || "");
+          }
         }
       } catch (e) {
-        console.error(`Shopify fulfillment failed for ${order.name}:`, e.message);
+        console.error(`[Fulfillment] ${order.name}:`, e.message);
+        shopifyFulfillmentError = e.message;
+        shopifyFulfillmentState = "failed";
       }
 
-      return {
-        id: order.id,
-        trackingNumber: result.tracking_number,
-        courierName: result.courier || null,
-        shopifyFulfillmentId: shopifyFulfillmentId || null,
-      };
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          bookingStatus: "booked",
+          shipmentStatus: "booked",
+          trackingNumber: result.tracking_number,
+          courierName: result.courier || null,
+          shopifyFulfillmentState: shopifyFulfillmentState ?? "pending",
+          shopifySyncStatus: shopifyFulfillmentId ? "synced" : "failed",
+          ...(shopifyFulfillmentId ? { shopifyFulfillmentId } : {}),
+          ...(shopifyFulfillmentError ? { shopifyFulfillmentError } : {}),
+        },
+      });
+
+      return { id: order.id, trackingNumber: result.tracking_number };
     };
 
-    // Run up to 5 bookings concurrently
     const limit = pLimit(5);
     const results = await Promise.allSettled(dbOrders.map((order) => limit(() => bookOne(order))));
 
-    const successfulUpdates = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
-    const errors = results.filter((r) => r.status === "rejected").map((r) => r.reason?.message || String(r.reason));
+    const succeeded = results.filter((r) => r.status === "fulfilled" && !r.value?.skipped).length;
+    const skipped = results.filter((r) => r.status === "fulfilled" && r.value?.skipped).length;
+    const failures = results
+      .filter((r) => r.status === "rejected")
+      .map((r) => ({ reason: r.reason?.message || String(r.reason) }));
 
-    // Batch all DB writes after API calls complete
-    await Promise.all(
-      successfulUpdates.map(({ id, trackingNumber, courierName, shopifyFulfillmentId }) =>
-        db.order.update({
-          where: { id },
-          data: {
-            bookingStatus: "booked",
-            shipmentStatus: "booked",
-            trackingNumber,
-            courierName,
-            ...(shopifyFulfillmentId ? { shopifyFulfillmentId } : {}),
-          },
-        })
-      )
-    );
-
-    if (errors.length > 0) return { ok: false, error: errors.join(" · ") };
-    return { ok: true };
+    return { ok: failures.length === 0, succeeded, skipped, failed: failures.length, failures };
   }
 
   return { ok: true };
@@ -551,12 +566,26 @@ export default function OrdersPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button style={S.searchBtn}>Search</button>
+          <button
+            style={{ ...S.searchBtn, marginLeft: "auto" }}
+            disabled={isSubmitting}
+            onClick={() => fetcher.submit({ intent: "syncOrders" }, { method: "POST" })}
+          >
+            {fetcher.data?.synced !== undefined && fetcher.state === "idle" ? `Synced ${fetcher.data.synced}` : "Sync orders"}
+          </button>
         </div>
 
         {/* Error banner */}
-        {fetcher.data?.error && (
-          <div style={S.errorBanner}>⚠ {fetcher.data.error}</div>
+        {fetcher.data?.failures?.length > 0 && (
+          <div style={S.errorBanner}>
+            <div>
+              ⚠ {fetcher.data.failed} order{fetcher.data.failed !== 1 ? "s" : ""} failed to book
+              {fetcher.data.succeeded > 0 ? ` (${fetcher.data.succeeded} succeeded)` : ""}:
+            </div>
+            <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+              {fetcher.data.failures.map((f, i) => <li key={i}>{f.reason}</li>)}
+            </ul>
+          </div>
         )}
 
         {/* Bulk bar */}

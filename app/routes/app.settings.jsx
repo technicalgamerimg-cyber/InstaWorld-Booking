@@ -16,7 +16,6 @@ export const loader = async ({ request }) => {
     shipperName: settings?.shipperName || "",
     shipperPhone: settings?.shipperPhone || "",
     shipperAddress: settings?.shipperAddress || "",
-    shipperCity: settings?.shipperCity || "",
   };
 };
 
@@ -33,7 +32,6 @@ export const action = async ({ request }) => {
     shipperName: form.get("shipperName") || null,
     shipperPhone: form.get("shipperPhone") || null,
     shipperAddress: form.get("shipperAddress") || null,
-    shipperCity: form.get("shipperCity") || null,
   };
 
   await db.settings.upsert({
@@ -169,6 +167,7 @@ export default function SettingsPage() {
   const data = useLoaderData();
   const fetcher = useFetcher();
   const [saved, setSaved] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const prevState = useRef("idle");
 
   useEffect(() => {
@@ -199,13 +198,22 @@ export default function SettingsPage() {
             <label style={S.label}>
               InstaWorld API Key <span style={S.required}>*</span>
             </label>
-            <input
-              name="instaworldApiKey"
-              type="text"
-              defaultValue={data.instaworldApiKey}
-              placeholder="Enter your InstaWorld API key"
-              style={S.input}
-            />
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <input
+                name="instaworldApiKey"
+                type={showApiKey ? "text" : "password"}
+                defaultValue={data.instaworldApiKey}
+                placeholder="Enter your InstaWorld API key"
+                style={{ ...S.input, fontFamily: showApiKey ? "inherit" : "monospace", letterSpacing: showApiKey ? "normal" : "2px" }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey((v) => !v)}
+                style={{ padding: "8px 14px", background: "#f6f6f7", border: "1px solid #c9cccf", borderRadius: "6px", cursor: "pointer", fontSize: "13px", whiteSpace: "nowrap", color: "#202223", fontWeight: "500" }}
+              >
+                {showApiKey ? "Hide" : "Show"}
+              </button>
+            </div>
             <p style={S.hint}>
               Used for authentication on every API call. Determines your pickup location and courier assignment.
             </p>
@@ -242,32 +250,50 @@ export default function SettingsPage() {
             </p>
           </div>
 
-          {/* Shipper Details Divider */}
-          <div style={{ borderTop: "1px solid #e1e3e5", margin: "8px 0 20px" }} />
-          <div style={{ fontWeight: "600", fontSize: "14px", marginBottom: "16px", color: "#202223" }}>
-            Shipper Details
-            <span style={{ fontWeight: "400", fontSize: "12px", color: "#6d7175", marginLeft: "8px" }}>
-              Printed on shipping labels
-            </span>
+          {/* Sender info for loadsheet */}
+          <div style={{ ...S.field, marginTop: "4px", paddingTop: "18px", borderTop: "1px solid #e1e3e5" }}>
+            <label style={{ ...S.label, fontSize: "12px", color: "#6d7175", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Loadsheet sender info
+            </label>
+            <p style={{ ...S.hint, marginTop: "6px", fontSize: "13px" }}>
+              These fields appear on your dispatch loadsheets as the pickup / sender details.
+              They do not affect AWB labels — AWB sender info is managed through your InstaWorld merchant account.
+            </p>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-            <div style={S.field}>
-              <label style={S.label}>Shipper name</label>
-              <input name="shipperName" type="text" defaultValue={data.shipperName} placeholder="Your business name" style={S.input} />
-            </div>
-            <div style={S.field}>
-              <label style={S.label}>Shipper phone</label>
-              <input name="shipperPhone" type="text" defaultValue={data.shipperPhone} placeholder="03XX-XXXXXXX" style={S.input} />
-            </div>
-            <div style={S.field}>
-              <label style={S.label}>Shipper city</label>
-              <input name="shipperCity" type="text" defaultValue={data.shipperCity} placeholder="Lahore" style={S.input} />
-            </div>
-            <div style={S.field}>
-              <label style={S.label}>Shipper address</label>
-              <input name="shipperAddress" type="text" defaultValue={data.shipperAddress} placeholder="Street, Area" style={S.input} />
-            </div>
+          <div style={S.field}>
+            <label style={S.label}>Sender name</label>
+            <input
+              name="shipperName"
+              type="text"
+              defaultValue={data.shipperName}
+              placeholder="e.g. Your store name"
+              style={S.input}
+            />
+            <p style={S.hint}>Appears as the shop name at the top of every loadsheet.</p>
+          </div>
+
+          <div style={S.field}>
+            <label style={S.label}>Sender phone</label>
+            <input
+              name="shipperPhone"
+              type="text"
+              defaultValue={data.shipperPhone}
+              placeholder="e.g. +92 300 1234567"
+              style={S.input}
+            />
+          </div>
+
+          <div style={S.field}>
+            <label style={S.label}>Sender address</label>
+            <textarea
+              name="shipperAddress"
+              defaultValue={data.shipperAddress}
+              placeholder="e.g. Shop 12, Model Town, Lahore"
+              rows={2}
+              style={S.textarea}
+            />
+            <p style={S.hint}>Pickup address shown on every dispatch loadsheet.</p>
           </div>
 
           {/* Footer */}

@@ -44,11 +44,17 @@ model Order {
   bookingStatus        String?  @default("pending")
   shipmentStatus       String?  @default("pending")
   address              String?
-  trackingNumber       String?
-  courierName          String?
-  shopifyFulfillmentId String?
-  createdAt            DateTime @default(now())
+  trackingNumber          String?
+  courierName             String?
+  shopifyFulfillmentId    String?
+  shopifyFulfillmentError Json?
+  shopifyFulfillmentState String?  @default("pending")
+  shopifySyncStatus       String?  @default("pending")
+  createdAt               DateTime @default(now())
   updatedAt            DateTime @updatedAt
+
+  @@index([shop, createdAt(sort: Desc)])
+  @@index([shop, bookingStatus, trackingNumber])
 }
 
 model Settings {
@@ -60,7 +66,44 @@ model Settings {
   shipperName         String?
   shipperPhone        String?
   shipperAddress      String?
-  shipperCity         String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+}
+
+model Loadsheet {
+  id          Int      @id @default(autoincrement())
+  shop        String
+  generatedAt DateTime @default(now())
+  orderCount  Int
+  totalCOD    Float
+  orderIds    Json
+  filename    String?
+}
+
+model WebhookDelivery {
+  id          Int      @id @default(autoincrement())
+  webhookId   String   @unique
+  createdAt   DateTime @default(now())
+}
+
+model WebhookFailure {
+  id             Int      @id @default(autoincrement())
+  shop           String
+  topic          String
+  shopifyOrderId String
+  errorMessage   String
+  rawPayload     Json
+  createdAt      DateTime @default(now())
+
+  @@index([shop, createdAt])
+}
+
+model WebhookEvent {
+  id             Int      @id @default(autoincrement())
+  shop           String
+  topic          String
+  shopifyOrderId String
+  processedAt    DateTime @default(now())
+
+  @@index([shop, processedAt])
 }

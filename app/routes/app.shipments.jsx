@@ -4,10 +4,8 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, apiVersion } from "../shopify.server";
 import db from "../db.server";
 import pLimit from "p-limit";
-
-const INSTAWORLD_BASE = "https://one-be.instaworld.pk/logistics/v1";
+import { cancelShipment } from "../utils/instaworld.server";
 const PAGE_SIZE = 50;
-const MAX_LABELS_PER_DOWNLOAD = 50;
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
@@ -17,9 +15,11 @@ export const loader = async ({ request }) => {
   const page = Math.max(1, Number(url.searchParams.get("page") || 1));
   const skip = (page - 1) * PAGE_SIZE;
 
-  const [orders, total, shopSettings] = await Promise.all([
+  const orderWhere = { shop: session.shop, bookingStatus: "booked", trackingNumber: { not: null } };
+
+  const [orders, total, loadsheets] = await Promise.all([
     db.order.findMany({
-      where: { shop: session.shop, bookingStatus: "booked" },
+      where: orderWhere,
       orderBy: { createdAt: "desc" },
       take: PAGE_SIZE,
       skip,
@@ -41,8 +41,13 @@ export const loader = async ({ request }) => {
         createdAt: true,
       },
     }),
-    db.order.count({ where: { shop: session.shop, bookingStatus: "booked" } }),
-    db.settings.findUnique({ where: { shop: session.shop } }),
+    db.order.count({ where: orderWhere }),
+    db.loadsheet.findMany({
+      where: { shop: session.shop },
+      orderBy: { generatedAt: "desc" },
+      take: 20,
+      select: { id: true, generatedAt: true, orderCount: true, totalCOD: true, filename: true },
+    }),
   ]);
 
   return {
@@ -57,14 +62,7 @@ export const loader = async ({ request }) => {
       total,
       totalPages: Math.ceil(total / PAGE_SIZE),
     },
-    settings: {
-      defaultWeight: shopSettings?.defaultWeight ?? 1,
-      defaultInstructions: shopSettings?.defaultInstructions ?? "",
-      shipperName: shopSettings?.shipperName ?? "",
-      shipperPhone: shopSettings?.shipperPhone ?? "",
-      shipperAddress: shopSettings?.shipperAddress ?? "",
-      shipperCity: shopSettings?.shipperCity ?? "",
-    },
+    loadsheets: loadsheets.map((l) => ({ ...l, generatedAt: l.generatedAt.toISOString() })),
   };
 };
 
@@ -80,69 +78,115 @@ export const action = async ({ request }) => {
     return { ok: false, error: "InstaWorld API key not configured. Go to Settings first." };
   }
 
-  const cancelOne = async (id) => {
-    const order = await db.order.findUnique({ where: { id: Number(id) } });
+  const shopifyFetch = async (url, options) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  // cancelOne accepts an order object — DB fetch is done upfront (no N+1)
+  const cancelOne = async (order) => {
     if (!order) return;
 
     if (order.trackingNumber) {
-      const res = await fetch(`${INSTAWORLD_BASE}/cancelShipment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: shopSettings.instaworldApiKey, tracking_number: order.trackingNumber }),
-      });
-      const result = await res.json();
-      if (!result.status) {
-        const msg = typeof result.message === "string" ? result.message : JSON.stringify(result.message || result);
-        throw new Error(`${order.name || id}: ${msg || "Cancel failed on InstaWorld side."}`);
+      try {
+        await cancelShipment(order.trackingNumber, shopSettings.instaworldApiKey);
+      } catch (e) {
+        console.error(`InstaWorld cancel error for ${order.name}:`, e.message);
       }
     }
 
-    if (order.shopifyFulfillmentId) {
+    let cancelObservation = "cancelled_attempted";
+
+    if (order.shopifyId) {
       try {
-        await fetch(
-          `https://${session.shop}/admin/api/${apiVersion}/fulfillments/${order.shopifyFulfillmentId}/cancel.json`,
-          {
+        if (order.shopifyFulfillmentId) {
+          const cancelUrl = `https://${session.shop}/admin/api/${apiVersion}/fulfillments/${order.shopifyFulfillmentId}/cancel.json`;
+          const cancelRes = await shopifyFetch(cancelUrl, {
             method: "POST",
             headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" },
+          });
+          if (cancelRes.ok) {
+            console.log(`[FulfillmentCancel] ${order.name} → success`);
+          } else {
+            const body = await cancelRes.text();
+            console.warn(`[FulfillmentCancel] ${order.name} POST ${cancelUrl} → ${cancelRes.status}:`, body);
+            if (cancelRes.status === 422) cancelObservation = "irreversible";
           }
-        );
+        }
+
+        const foUrl = `https://${session.shop}/admin/api/${apiVersion}/orders/${order.shopifyId}/fulfillment_orders.json`;
+        const foRes = await shopifyFetch(foUrl, { headers: { "X-Shopify-Access-Token": session.accessToken } });
+        if (foRes.ok) {
+          const { fulfillment_orders = [] } = await foRes.json();
+          const CANCELLABLE = new Set(["open", "assigned", "in_progress", "scheduled"]);
+          for (const fo of fulfillment_orders) {
+            if (CANCELLABLE.has(fo.status)) {
+              const foCancelUrl = `https://${session.shop}/admin/api/${apiVersion}/fulfillment_orders/${fo.id}/cancel.json`;
+              const foCancel = await shopifyFetch(foCancelUrl, {
+                method: "POST",
+                headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" },
+              });
+              if (!foCancel.ok) {
+                const body = await foCancel.text();
+                console.warn(`[FOCancel] ${order.name} FO ${fo.id} → ${foCancel.status}:`, body);
+              }
+            }
+          }
+        } else {
+          const body = await foRes.text();
+          console.error(`[FO fetch] ${order.name} GET ${foUrl} → ${foRes.status}:`, body);
+          cancelObservation = "failed";
+        }
       } catch (e) {
-        console.error(`Shopify fulfillment cancel failed for ${order.name}:`, e.message);
+        console.error(`[ShopifyCancel] ${order.name}:`, e.message);
+        cancelObservation = "failed";
       }
     }
 
     await db.order.update({
-      where: { id: Number(id) },
-      data: { bookingStatus: "pending", shipmentStatus: "cancelled", trackingNumber: null, shopifyFulfillmentId: null },
+      where: { id: order.id },
+      data: {
+        bookingStatus: "pending",
+        shipmentStatus: "cancelled",
+        trackingNumber: null,
+        shopifyFulfillmentId: null,
+        shopifyFulfillmentState: cancelObservation,
+        shopifySyncStatus: cancelObservation === "cancelled_attempted" ? "synced" : "failed",
+      },
     });
   };
 
   if (intent === "cancelSingle") {
-    const id = form.get("orderId");
-    try {
-      await cancelOne(id);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e.message || "Cancel failed." };
-    }
+    const singleOrder = await db.order.findFirst({
+      where: { id: Number(form.get("orderId")), shop: session.shop },
+      select: { id: true, shopifyId: true, name: true, trackingNumber: true, shopifyFulfillmentId: true },
+    });
+    if (singleOrder) await cancelOne(singleOrder);
+    return { ok: true };
   }
 
   if (intent === "cancelBulk") {
     const ids = JSON.parse(form.get("orderIds"));
+    // Fetch all target orders upfront — 1 DB query instead of N (eliminates N+1)
+    const bulkOrders = await db.order.findMany({
+      where: { id: { in: ids.map(Number) }, shop: session.shop },
+      select: { id: true, shopifyId: true, name: true, trackingNumber: true, shopifyFulfillmentId: true },
+    });
+    const orderMap = new Map(bulkOrders.map((o) => [o.id, o]));
     const limit = pLimit(5);
-    const results = await Promise.allSettled(ids.map((id) => limit(() => cancelOne(id))));
-
-    const failures = results
-      .filter((r) => r.status === "rejected")
-      .map((r) => r.reason?.message || String(r.reason));
-    const cancelled = results.filter((r) => r.status === "fulfilled").length;
-
-    return {
-      ok: failures.length === 0,
-      cancelled,
-      failed: failures.length,
-      failures,
-    };
+    await Promise.allSettled(
+      ids.map((id) => {
+        const order = orderMap.get(Number(id));
+        if (!order) return { id: Number(id), skipped: true, reason: "not_found" };
+        return limit(() => cancelOne(order));
+      })
+    );
+    return { ok: true, cancelled: ids.length };
   }
 
   return { ok: true };
@@ -221,14 +265,14 @@ function CancelConfirmModal({ ids, orders, onConfirm, onClose }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ShipmentsPage() {
-  const { orders, pagination, settings } = useLoaderData();
+  const { orders, pagination, loadsheets } = useLoaderData();
   const navigate = useNavigate();
   const cancelFetcher = useFetcher();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(new Set());
   const [cancelConfirmIds, setCancelConfirmIds] = useState(null);
-  const [isDownloadingLabels, setIsDownloadingLabels] = useState(false);
-  const [labelError, setLabelError] = useState(null);
+  const [zipLoading, setZipLoading] = useState(false);
+  const [loadsheetLoading, setLoadsheetLoading] = useState(false);
   const prevCancelState = useRef("idle");
 
   useEffect(() => {
@@ -284,28 +328,77 @@ export default function ShipmentsPage() {
     setCancelConfirmIds(null);
   };
 
-  const handleDownloadLabels = async (orderIds) => {
-    if (orderIds.length > MAX_LABELS_PER_DOWNLOAD) {
-      setLabelError(`Maximum ${MAX_LABELS_PER_DOWNLOAD} labels per download. Select fewer orders.`);
-      return;
-    }
-    setIsDownloadingLabels(true);
-    setLabelError(null);
+  const downloadAWB = async (trackingNumber) => {
+    const res = await fetch(`/api/awb/${encodeURIComponent(trackingNumber)}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `awb-${trackingNumber}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadBulkAWB = async () => {
+    const selectedIds = new Set(selected);
+    const targets = orders.filter((o) => selectedIds.has(o.id) && o.trackingNumber);
+    if (targets.length === 0) return;
+    setZipLoading(true);
     try {
-      const [{ adaptOrderForSlipKit }, { mapShippingLabelData }, { downloadLabels }] = await Promise.all([
-        import("../utils/adaptOrderForSlipKit.js"),
-        import("../utils/slip-kit/mapShippingLabelData.js"),
-        import("../utils/slip-kit/downloadLabels.js"),
-      ]);
-      const selectedOrders = orders.filter((o) => orderIds.includes(o.id));
-      const adapted = selectedOrders.map((o) => adaptOrderForSlipKit(o, settings));
-      const labels = await mapShippingLabelData(adapted, []);
-      await downloadLabels(labels, { filename: `labels-${Date.now()}.pdf` });
-    } catch (e) {
-      setLabelError(`Label generation failed: ${e.message}`);
+      const res = await fetch("/api/awb/bulk-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: targets.map((o) => o.id) }),
+      });
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `awb-labels-${new Date().toISOString().slice(0, 10)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
     } finally {
-      setIsDownloadingLabels(false);
+      setZipLoading(false);
     }
+  };
+
+  const downloadLoadsheet = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    setLoadsheetLoading(true);
+    try {
+      const res = await fetch("/api/loadsheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error("Loadsheet generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `loadsheet-${new Date().toISOString().slice(0, 10)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      navigate(".", { replace: true }); // refresh to show new history entry
+    } catch (e) {
+      console.error("Loadsheet error:", e.message);
+    } finally {
+      setLoadsheetLoading(false);
+    }
+  };
+
+  const redownloadLoadsheet = async (id, filename) => {
+    const res = await fetch(`/api/loadsheet/${id}`);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || `loadsheet-${id}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const isCancelling = cancelFetcher.state !== "idle";
@@ -328,7 +421,6 @@ export default function ShipmentsPage() {
 
         {/* Status banners */}
         {cancelResult?.error && <div style={S.errorBanner}>⚠ {cancelResult.error}</div>}
-        {labelError && <div style={S.errorBanner}>⚠ {labelError}</div>}
         {cancelResult?.cancelled > 0 && cancelResult?.failed > 0 && (
           <div style={S.errorBanner}>
             Cancelled {cancelResult.cancelled}, failed {cancelResult.failed} — {cancelResult.failures.join(" · ")}
@@ -347,28 +439,42 @@ export default function ShipmentsPage() {
             {selected.size > 0 ? `${selected.size} selected` : `${pagination.total} shipment${pagination.total !== 1 ? "s" : ""}`}
           </span>
 
-          {selected.size > 0 && (
-            <>
-              <button
-                style={S.btnBulkDownload}
-                disabled={isDownloadingLabels || isCancelling}
-                onClick={() => handleDownloadLabels([...selected])}
-              >
-                {isDownloadingLabels
-                  ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Preparing…</>
-                  : `Download labels (${selected.size})`}
-              </button>
-              <button
-                style={S.btnBulkCancel}
-                disabled={isCancelling || isDownloadingLabels}
-                onClick={() => setCancelConfirmIds([...selected])}
-              >
-                {isCancelling
-                  ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Cancelling…</>
-                  : `Cancel selected (${selected.size})`}
-              </button>
-            </>
-          )}
+          {selected.size > 0 && (() => {
+            const withTracking = orders.filter((o) => selected.has(o.id) && o.trackingNumber);
+            const skipped = selected.size - withTracking.length;
+            const anyExporting = zipLoading || loadsheetLoading;
+            return (
+              <>
+                <button
+                  style={S.btnBulkDownload}
+                  disabled={isCancelling || anyExporting}
+                  onClick={downloadBulkAWB}
+                >
+                  {zipLoading
+                    ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Preparing…</>
+                    : `AWB Labels (${withTracking.length})${skipped > 0 ? ` · ${skipped} skipped` : ""}`}
+                </button>
+                <button
+                  style={{ ...S.btnBulkDownload, background: "#1a5c3a" }}
+                  disabled={isCancelling || anyExporting}
+                  onClick={downloadLoadsheet}
+                >
+                  {loadsheetLoading
+                    ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Generating…</>
+                    : `Dispatch Loadsheet (${selected.size})`}
+                </button>
+                <button
+                  style={S.btnBulkCancel}
+                  disabled={isCancelling || anyExporting}
+                  onClick={() => setCancelConfirmIds([...selected])}
+                >
+                  {isCancelling
+                    ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Cancelling…</>
+                    : `Cancel selected (${selected.size})`}
+                </button>
+              </>
+            );
+          })()}
         </div>
 
         {/* Table */}
@@ -425,16 +531,18 @@ export default function ShipmentsPage() {
                       <td style={{ ...S.td, color: "#6d7175" }}>{order.courierName || "—"}</td>
                       <td style={{ ...S.td, color: "#6d7175", fontSize: "12px", whiteSpace: "nowrap" }}>{bookedDate}</td>
                       <td style={{ ...S.td, whiteSpace: "nowrap" }}>
-                        <button
-                          style={isDownloadingLabels ? { ...S.btnDownload, opacity: 0.6, cursor: "not-allowed" } : S.btnDownload}
-                          disabled={isDownloadingLabels || isCancelling}
-                          onClick={() => handleDownloadLabels([order.id])}
-                        >
-                          Label
-                        </button>
+                        {order.trackingNumber && (
+                          <button
+                            style={S.btnDownload}
+                            disabled={isCancelling}
+                            onClick={() => downloadAWB(order.trackingNumber)}
+                          >
+                            Label
+                          </button>
+                        )}
                         <button
                           style={S.btnCancel}
-                          disabled={isCancelling || isDownloadingLabels}
+                          disabled={isCancelling}
                           onClick={() => setCancelConfirmIds([order.id])}
                         >
                           Cancel
@@ -480,6 +588,49 @@ export default function ShipmentsPage() {
           onClose={() => setCancelConfirmIds(null)}
           onConfirm={handleConfirmCancel}
         />
+      )}
+
+      {/* Loadsheet History */}
+      {loadsheets.length > 0 && (
+        <div style={{ ...S.card, marginTop: "20px" }}>
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #e1e3e5", fontWeight: "600", fontSize: "14px" }}>
+            Loadsheet History
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  {["Generated", "Orders", "Total COD (PKR)", ""].map((h, i) => (
+                    <th key={i} style={S.th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loadsheets.map((ls) => {
+                  const genDate = new Date(ls.generatedAt).toLocaleString("en-PK", {
+                    day: "2-digit", month: "short", year: "numeric",
+                    hour: "2-digit", minute: "2-digit",
+                  });
+                  return (
+                    <tr key={ls.id}>
+                      <td style={S.td}>{genDate}</td>
+                      <td style={S.td}>{ls.orderCount}</td>
+                      <td style={S.td}>{ls.totalCOD.toFixed(2)}</td>
+                      <td style={{ ...S.td, textAlign: "right" }}>
+                        <button
+                          style={S.btnDownload}
+                          onClick={() => redownloadLoadsheet(ls.id, ls.filename)}
+                        >
+                          Download
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
