@@ -2,12 +2,11 @@
 
 client_id = "e0713fe957f33a5cb9cf9b4733a64378"
 name = "InstaWorld Booking"
-application_url = "https://example.com"
+application_url = "https://insta-world-booking.vercel.app"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-07"
@@ -29,7 +28,7 @@ api_version = "2026-07"
 scopes = "read_products,write_products,read_orders,write_orders,write_fulfillments,read_fulfillments,read_merchant_managed_fulfillment_orders,write_merchant_managed_fulfillment_orders,write_metaobjects,write_metaobject_definitions"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://insta-world-booking.vercel.app/api/auth" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
