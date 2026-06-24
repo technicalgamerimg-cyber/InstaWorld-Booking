@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate, apiVersion } from "../shopify.server";
+import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import pLimit from "p-limit";
 import { createShipment } from "../utils/instaworld.server";
@@ -50,59 +50,94 @@ export const loader = async ({ request }) => {
 
 // ─── Action ──────────────────────────────────────────────────────────────────
 
-const shopifyFetch = async (url, options) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30_000);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-};
-
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = form.get("intent");
 
   // Manual admin-triggered sync — the only path that calls the Shopify API on demand
   if (intent === "syncOrders") {
-    const response = await shopifyFetch(
-      `https://${session.shop}/admin/api/${apiVersion}/orders.json?status=any&limit=50`,
-      { headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" } }
-    );
-    const { orders: shopifyOrders = [] } = await response.json();
-    for (const o of shopifyOrders) {
-      const customerName =
-        [o.shipping_address?.first_name, o.shipping_address?.last_name].filter(Boolean).join(" ") ||
-        [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(" ") ||
-        null;
-      await db.order.upsert({
-        where: { shopifyId: BigInt(o.id) },
-        update: {
-          shop: session.shop,
-          name: o.name, email: o.email,
-          phone: o.phone || o.shipping_address?.phone || null,
-          totalPrice: o.total_price, currency: o.currency,
-          financialStatus: o.financial_status, fulfillmentStatus: o.fulfillment_status,
-          lineItems: o.line_items, customerName,
-          city: o.shipping_address?.city || null,
-          address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
-        },
-        create: {
-          shopifyId: BigInt(o.id), shop: session.shop,
-          name: o.name, email: o.email,
-          phone: o.phone || o.shipping_address?.phone || null,
-          totalPrice: o.total_price, currency: o.currency,
-          financialStatus: o.financial_status, fulfillmentStatus: o.fulfillment_status,
-          lineItems: o.line_items, customerName,
-          city: o.shipping_address?.city || null,
-          address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
-          bookingStatus: "pending",
-        },
-      });
+    const response = await admin.graphql(`
+      #graphql
+      query SyncOrders {
+        # intentional limit — matches prior REST limit=50; cursor pagination is a future improvement
+        orders(first: 50, sortKey: CREATED_AT, reverse: true) {
+          edges {
+            node {
+              id
+              name
+              email
+              phone
+              totalPriceSet { shopMoney { amount currencyCode } }
+              financialStatus
+              displayFulfillmentStatus
+              lineItems(first: 50) {
+                edges {
+                  node {
+                    title
+                    quantity
+                    originalUnitPriceSet { shopMoney { amount } }
+                    sku
+                  }
+                }
+              }
+              customer { firstName lastName }
+              shippingAddress { firstName lastName address1 address2 city phone }
+            }
+          }
+        }
+      }
+    `);
+    const payload = await response.json();
+    if (payload.extensions?.cost) {
+      console.log("[syncOrders] GraphQL cost:", JSON.stringify(payload.extensions.cost));
     }
-    return { ok: true, synced: shopifyOrders.length };
+    if (payload.errors?.length) {
+      throw new Error(payload.errors.map((e) => e.message).join(", "));
+    }
+    const shopifyOrders = payload.data?.orders?.edges?.map(({ node }) => node) ?? [];
+    let synced = 0;
+    for (const node of shopifyOrders) {
+      let numericId;
+      try {
+        const idPart = node.id?.split("/").pop();
+        if (!idPart) { console.warn("[syncOrders] Skipping node with missing id:", node); continue; }
+        numericId = BigInt(idPart);
+      } catch (e) {
+        console.warn("[syncOrders] Skipping malformed GID:", node.id, e.message);
+        continue;
+      }
+      const customerName =
+        [node.shippingAddress?.firstName, node.shippingAddress?.lastName].filter(Boolean).join(" ") ||
+        [node.customer?.firstName, node.customer?.lastName].filter(Boolean).join(" ") || null;
+      const lineItems = node.lineItems.edges.map(({ node: li }) => ({
+        title: li.title,
+        price: li.originalUnitPriceSet.shopMoney.amount,
+        quantity: li.quantity,
+        sku: li.sku || "",
+      }));
+      const orderFields = {
+        shop: session.shop,
+        name: node.name,
+        email: node.email,
+        phone: node.phone || node.shippingAddress?.phone || null,
+        totalPrice: node.totalPriceSet.shopMoney.amount,
+        currency: node.totalPriceSet.shopMoney.currencyCode,
+        financialStatus: (node.financialStatus || "").toLowerCase(),
+        fulfillmentStatus: (node.displayFulfillmentStatus || "").toLowerCase(),
+        lineItems,
+        customerName,
+        city: node.shippingAddress?.city || null,
+        address: [node.shippingAddress?.address1, node.shippingAddress?.address2].filter(Boolean).join(", ") || null,
+      };
+      await db.order.upsert({
+        where: { shopifyId: numericId },
+        update: orderFields,
+        create: { shopifyId: numericId, ...orderFields, bookingStatus: "pending" },
+      });
+      synced++;
+    }
+    return { ok: true, synced };
   }
 
   if (intent === "book") {
@@ -112,6 +147,7 @@ export const action = async ({ request }) => {
     const instructions = form.get("instructions") || null;
 
     const shopSettings = await db.settings.findUnique({ where: { shop: session.shop } });
+    // admin is captured from the outer destructure and available to bookOne via closure
     if (!shopSettings?.instaworldApiKey) {
       return { ok: false, failures: [{ reason: "InstaWorld API key not configured. Go to Settings first." }], succeeded: 0, failed: 1 };
     }
@@ -179,45 +215,63 @@ export const action = async ({ request }) => {
       let shopifyFulfillmentError = null;
       let shopifyFulfillmentState = "pending";
       try {
-        const foUrl = `https://${session.shop}/admin/api/${apiVersion}/orders/${order.shopifyId}/fulfillment_orders.json`;
-        const foRes = await shopifyFetch(foUrl, { headers: { "X-Shopify-Access-Token": session.accessToken } });
-        if (!foRes.ok) {
-          const body = await foRes.text();
-          console.error(`[FO fetch] ${order.name} GET ${foUrl} → ${foRes.status}:`, body);
-          shopifyFulfillmentError = `HTTP ${foRes.status}: ${body}`;
-          shopifyFulfillmentState = "failed";
-        } else {
-          const { fulfillment_orders = [] } = await foRes.json();
-          const openFOs = fulfillment_orders.filter((fo) => fo.status !== "closed" && fo.status !== "cancelled");
-          if (openFOs.length > 0) {
-            const fulfillUrl = `https://${session.shop}/admin/api/${apiVersion}/fulfillments.json`;
-            const fulfillBody = {
-              fulfillment: {
-                line_items_by_fulfillment_order: openFOs.map((fo) => ({ fulfillment_order_id: fo.id })),
-                tracking_info: { number: result.tracking_number, company: result.courier || "InstaWorld" },
-                notify_customer: false,
-              },
-            };
-            const fulfillRes = await shopifyFetch(fulfillUrl, {
-              method: "POST",
-              headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" },
-              body: JSON.stringify(fulfillBody),
-            });
-            const fulfillData = await fulfillRes.json();
-            if (fulfillData.fulfillment?.id) {
-              shopifyFulfillmentId = String(fulfillData.fulfillment.id);
-              shopifyFulfillmentState = "fulfilled";
-            } else {
-              const raw = fulfillData.errors;
-              const errDetail = Array.isArray(raw)
-                ? raw.map((e) => e.message || JSON.stringify(e)).join(", ")
-                : raw && typeof raw === "object"
-                  ? Object.entries(raw).map(([k, v]) => `${k}: ${v}`).join(", ")
-                  : raw ? String(raw) : "Unknown Shopify fulfillment error";
-              console.error(`[Fulfillment create] ${order.name} POST ${fulfillUrl} → ${fulfillRes.status}:`, errDetail);
-              shopifyFulfillmentError = raw ?? errDetail;
-              shopifyFulfillmentState = "failed";
+        const orderGid = `gid://shopify/Order/${order.shopifyId.toString()}`;
+        const foResponse = await admin.graphql(`
+          #graphql
+          query GetFulfillmentOrders($orderId: ID!) {
+            order(id: $orderId) {
+              fulfillmentOrders(first: 10) {
+                edges { node { id status } }
+              }
             }
+          }
+        `, { variables: { orderId: orderGid } });
+        const foPayload = await foResponse.json();
+        if (foPayload.errors?.length) {
+          throw new Error(foPayload.errors.map((e) => e.message).join(", "));
+        }
+        if (!foPayload.data?.order) {
+          console.warn(`[bookOne] order ${orderGid} returned null — may not exist in Shopify`);
+        }
+        const TERMINAL = new Set(["CLOSED", "CANCELLED", "INCOMPLETE"]);
+        const allFOs = foPayload.data?.order?.fulfillmentOrders?.edges?.map((e) => e.node) ?? [];
+        allFOs.forEach((fo) => {
+          if (!TERMINAL.has(fo.status) && !["OPEN", "IN_PROGRESS", "SCHEDULED", "ON_HOLD"].includes(fo.status)) {
+            console.warn(`[bookOne] Unexpected FO status "${fo.status}" for order ${order.name}`);
+          }
+        });
+        const openFOs = allFOs.filter((fo) => !TERMINAL.has(fo.status));
+        if (openFOs.length > 0) {
+          const fulfillMutation = await admin.graphql(`
+            #graphql
+            mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
+              fulfillmentCreateV2(fulfillment: $fulfillment) {
+                fulfillment { id status }
+                userErrors { field message code }
+              }
+            }
+          `, {
+            variables: {
+              fulfillment: {
+                lineItemsByFulfillmentOrder: openFOs.map((fo) => ({ fulfillmentOrderId: fo.id })),
+                trackingInfo: { number: result.tracking_number, company: result.courier || "InstaWorld" },
+                notifyCustomer: false,
+              },
+            },
+          });
+          const fulfillPayload = await fulfillMutation.json();
+          const fulfillment = fulfillPayload.data?.fulfillmentCreateV2?.fulfillment;
+          const errors = fulfillPayload.data?.fulfillmentCreateV2?.userErrors ?? [];
+          if (fulfillment?.id) {
+            shopifyFulfillmentId = fulfillment.id.split("/").pop(); // store numeric portion
+            shopifyFulfillmentState = "fulfilled";
+            if (errors.length > 0) {
+              console.warn(`[Fulfillment create] ${order.name} succeeded with userErrors:`, errors);
+            }
+          } else {
+            shopifyFulfillmentError = errors.map((e) => e.message).join(", ") || "Unknown Shopify fulfillment error";
+            shopifyFulfillmentState = "failed";
+            console.error(`[Fulfillment create] ${order.name}:`, shopifyFulfillmentError);
           }
         }
       } catch (e) {

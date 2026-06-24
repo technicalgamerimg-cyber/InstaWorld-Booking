@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLoaderData, useFetcher, useNavigate, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate, apiVersion } from "../shopify.server";
+import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import pLimit from "p-limit";
 import { cancelShipment } from "../utils/instaworld.server";
@@ -69,7 +69,7 @@ export const loader = async ({ request }) => {
 // ─── Action ──────────────────────────────────────────────────────────────────
 
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = form.get("intent");
 
@@ -78,17 +78,8 @@ export const action = async ({ request }) => {
     return { ok: false, error: "InstaWorld API key not configured. Go to Settings first." };
   }
 
-  const shopifyFetch = async (url, options) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30_000);
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  };
-
   // cancelOne accepts an order object — DB fetch is done upfront (no N+1)
+  // admin is captured from the outer destructure and available via closure
   const cancelOne = async (order) => {
     if (!order) return;
 
@@ -105,42 +96,69 @@ export const action = async ({ request }) => {
     if (order.shopifyId) {
       try {
         if (order.shopifyFulfillmentId) {
-          const cancelUrl = `https://${session.shop}/admin/api/${apiVersion}/fulfillments/${order.shopifyFulfillmentId}/cancel.json`;
-          const cancelRes = await shopifyFetch(cancelUrl, {
-            method: "POST",
-            headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" },
-          });
-          if (cancelRes.ok) {
-            console.log(`[FulfillmentCancel] ${order.name} → success`);
+          const fulfillmentGid = `gid://shopify/Fulfillment/${order.shopifyFulfillmentId}`;
+          const cancelMutation = await admin.graphql(`
+            #graphql
+            mutation CancelFulfillment($id: ID!) {
+              fulfillmentCancel(id: $id) {
+                fulfillment { id status }
+                userErrors { field message code }
+              }
+            }
+          `, { variables: { id: fulfillmentGid } });
+          const cancelPayload = await cancelMutation.json();
+          const cancelErrors = cancelPayload.data?.fulfillmentCancel?.userErrors ?? [];
+          if (cancelErrors.length > 0) {
+            const codes = cancelErrors.map((e) => e.code).filter(Boolean);
+            const msgs = cancelErrors.map((e) => e.message).join(", ");
+            console.warn(`[FulfillmentCancel] ${order.name}:`, msgs);
+            const irreversibleCodes = new Set(["ALREADY_CANCELLED", "NOT_CANCELLABLE"]);
+            if (codes.length > 0) {
+              if (codes.some((c) => irreversibleCodes.has(c))) cancelObservation = "irreversible";
+            } else if (msgs.includes("cannot be cancelled") || msgs.includes("already cancelled")) {
+              cancelObservation = "irreversible";
+            }
           } else {
-            const body = await cancelRes.text();
-            console.warn(`[FulfillmentCancel] ${order.name} POST ${cancelUrl} → ${cancelRes.status}:`, body);
-            if (cancelRes.status === 422) cancelObservation = "irreversible";
+            console.log(`[FulfillmentCancel] ${order.name} → success`);
           }
         }
 
-        const foUrl = `https://${session.shop}/admin/api/${apiVersion}/orders/${order.shopifyId}/fulfillment_orders.json`;
-        const foRes = await shopifyFetch(foUrl, { headers: { "X-Shopify-Access-Token": session.accessToken } });
-        if (foRes.ok) {
-          const { fulfillment_orders = [] } = await foRes.json();
-          const CANCELLABLE = new Set(["open", "assigned", "in_progress", "scheduled"]);
-          for (const fo of fulfillment_orders) {
-            if (CANCELLABLE.has(fo.status)) {
-              const foCancelUrl = `https://${session.shop}/admin/api/${apiVersion}/fulfillment_orders/${fo.id}/cancel.json`;
-              const foCancel = await shopifyFetch(foCancelUrl, {
-                method: "POST",
-                headers: { "X-Shopify-Access-Token": session.accessToken, "Content-Type": "application/json" },
-              });
-              if (!foCancel.ok) {
-                const body = await foCancel.text();
-                console.warn(`[FOCancel] ${order.name} FO ${fo.id} → ${foCancel.status}:`, body);
+        const orderGid = `gid://shopify/Order/${order.shopifyId.toString()}`;
+        const foResponse = await admin.graphql(`
+          #graphql
+          query GetFulfillmentOrders($orderId: ID!) {
+            order(id: $orderId) {
+              fulfillmentOrders(first: 10) {
+                edges { node { id status } }
               }
             }
           }
-        } else {
-          const body = await foRes.text();
-          console.error(`[FO fetch] ${order.name} GET ${foUrl} → ${foRes.status}:`, body);
-          cancelObservation = "failed";
+        `, { variables: { orderId: orderGid } });
+        const foPayload = await foResponse.json();
+        if (!foPayload.data?.order) {
+          console.warn(`[cancelOne] order ${orderGid} returned null — may not exist in Shopify`);
+        }
+        const CANCELLABLE = new Set(["OPEN", "IN_PROGRESS", "SCHEDULED", "ON_HOLD"]);
+        for (const fo of (foPayload.data?.order?.fulfillmentOrders?.edges?.map((e) => e.node) ?? [])) {
+          if (!CANCELLABLE.has(fo.status) && !["CLOSED", "CANCELLED", "INCOMPLETE"].includes(fo.status)) {
+            console.warn(`[cancelOne] Unexpected FO status "${fo.status}" for order ${order.name}`);
+          }
+          if (CANCELLABLE.has(fo.status)) {
+            const foCancelMutation = await admin.graphql(`
+              #graphql
+              mutation CancelFulfillmentOrder($id: ID!) {
+                fulfillmentOrderCancel(id: $id) {
+                  fulfillmentOrder { id status }
+                  userErrors { field message code }
+                }
+              }
+            `, { variables: { id: fo.id } });
+            const foCancelPayload = await foCancelMutation.json();
+            const foErrors = foCancelPayload.data?.fulfillmentOrderCancel?.userErrors ?? [];
+            if (foErrors.length > 0) {
+              console.warn(`[FOCancel] ${order.name} FO ${fo.id}:`, foErrors.map((e) => e.message).join(", "));
+            }
+          }
         }
       } catch (e) {
         console.error(`[ShopifyCancel] ${order.name}:`, e.message);
