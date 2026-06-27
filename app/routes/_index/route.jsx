@@ -18,9 +18,9 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>InstaWorld Booking</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Sync your Shopify orders and book InstaWorld courier pickups — all from your Shopify Admin.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -36,16 +36,13 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Automated order sync</strong>. Import your latest Shopify orders in one click and keep your fulfillment pipeline up to date.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>One-click shipment booking</strong>. Create InstaWorld courier bookings directly from your order list with tracking numbers generated instantly.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Live shipment tracking</strong>. Monitor shipment status and manage cancellations in real time, all within Shopify Admin.
           </li>
         </ul>
       </div>
