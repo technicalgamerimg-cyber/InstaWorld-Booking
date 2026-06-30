@@ -7,6 +7,11 @@ export const action = async ({ request }) => {
   if (topic === "ORDERS_CREATE" || topic === "ORDERS_UPDATED") {
     const o = payload;
 
+    if (!o?.id) {
+      console.warn(`[webhook:${topic}] payload missing order id — skipping`);
+      return new Response(null, { status: 200 });
+    }
+
     // Deduplication — store webhookId before processing so concurrent retries are blocked
     const webhookId = request.headers.get("X-Shopify-Webhook-Id");
     if (webhookId) {
@@ -34,14 +39,14 @@ export const action = async ({ request }) => {
         where: { shopifyId: BigInt(o.id) },
         update: {
           shop,
-          name: o.name,
-          email: o.email,
+          name: o.name ?? null,
+          email: o.email ?? null,
           phone: o.phone || o.shipping_address?.phone || null,
-          totalPrice: o.total_price,
-          currency: o.currency,
-          financialStatus: o.financial_status,
-          fulfillmentStatus: o.fulfillment_status,
-          lineItems: o.line_items,
+          totalPrice: o.total_price ?? "0",
+          currency: o.currency ?? "",
+          financialStatus: o.financial_status ?? "pending",
+          fulfillmentStatus: o.fulfillment_status ?? null,
+          lineItems: o.line_items ?? [],
           customerName,
           city: o.shipping_address?.city || null,
           address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
@@ -49,14 +54,14 @@ export const action = async ({ request }) => {
         create: {
           shopifyId: BigInt(o.id),
           shop,
-          name: o.name,
-          email: o.email,
+          name: o.name ?? null,
+          email: o.email ?? null,
           phone: o.phone || o.shipping_address?.phone || null,
-          totalPrice: o.total_price,
-          currency: o.currency,
-          financialStatus: o.financial_status,
-          fulfillmentStatus: o.fulfillment_status,
-          lineItems: o.line_items,
+          totalPrice: o.total_price ?? "0",
+          currency: o.currency ?? "",
+          financialStatus: o.financial_status ?? "pending",
+          fulfillmentStatus: o.fulfillment_status ?? null,
+          lineItems: o.line_items ?? [],
           customerName,
           city: o.shipping_address?.city || null,
           address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
@@ -76,7 +81,9 @@ export const action = async ({ request }) => {
       await db.webhookFailure.create({
         data: { shop, topic, shopifyOrderId: String(o.id), errorMessage: err.message, rawPayload: o },
       }).catch(() => {});
-      return new Response("Internal error", { status: 500 });
+      // Always 200 — a 500 here causes Shopify to retry indefinitely. The dead-letter
+      // table above captures the failure for manual replay via /api/webhook-replay.
+      return new Response(null, { status: 200 });
     }
   }
 

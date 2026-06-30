@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import pLimit from "p-limit";
 import { createShipment } from "../utils/instaworld.server";
+import { graphqlQueryWithRetry, parseGraphQLResponse } from "../utils/graphql.server";
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
@@ -12,40 +13,49 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
 
   // Orders page is now a pure DB read — Shopify sync happens via webhooks (api.webhooks.jsx)
-  const [orders, shopSettings] = await Promise.all([
-    db.order.findMany({
-      where: { shop: session.shop },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-      select: {
-        id: true,
-        shopifyId: true,
-        name: true,
-        customerName: true,
-        phone: true,
-        city: true,
-        totalPrice: true,
-        currency: true,
-        financialStatus: true,
-        bookingStatus: true,
-        trackingNumber: true,
-        createdAt: true,
-      },
-    }),
-    db.settings.findUnique({ where: { shop: session.shop } }),
-  ]);
+  try {
+    const [orders, shopSettings] = await Promise.all([
+      db.order.findMany({
+        where: { shop: session.shop },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        select: {
+          id: true,
+          shopifyId: true,
+          name: true,
+          customerName: true,
+          phone: true,
+          city: true,
+          totalPrice: true,
+          currency: true,
+          financialStatus: true,
+          bookingStatus: true,
+          trackingNumber: true,
+          createdAt: true,
+        },
+      }),
+      db.settings.findUnique({ where: { shop: session.shop } }),
+    ]);
 
-  return {
-    orders: orders.map((o) => ({
-      ...o,
-      shopifyId: o.shopifyId.toString(),
-      createdAt: o.createdAt.toISOString(),
-    })),
-    settings: {
-      defaultWeight: shopSettings?.defaultWeight ?? 1,
-      defaultInstructions: shopSettings?.defaultInstructions ?? "",
-    },
-  };
+    return {
+      orders: orders.map((o) => ({
+        ...o,
+        shopifyId: o.shopifyId.toString(),
+        createdAt: o.createdAt.toISOString(),
+      })),
+      settings: {
+        defaultWeight: shopSettings?.defaultWeight ?? 1,
+        defaultInstructions: shopSettings?.defaultInstructions ?? "",
+      },
+    };
+  } catch (err) {
+    console.error("[loader:orders] DB error:", err.message);
+    return {
+      orders: [],
+      settings: { defaultWeight: 1, defaultInstructions: "" },
+      error: "Could not load orders.",
+    };
+  }
 };
 
 // ─── Action ──────────────────────────────────────────────────────────────────
@@ -57,87 +67,100 @@ export const action = async ({ request }) => {
 
   // Manual admin-triggered sync — the only path that calls the Shopify API on demand
   if (intent === "syncOrders") {
-    const response = await admin.graphql(`
-      #graphql
-      query SyncOrders {
-        # intentional limit — matches prior REST limit=50; cursor pagination is a future improvement
-        orders(first: 50, sortKey: CREATED_AT, reverse: true) {
-          edges {
-            node {
-              id
-              name
-              email
-              phone
-              totalPriceSet { shopMoney { amount currencyCode } }
-              financialStatus
-              displayFulfillmentStatus
-              lineItems(first: 50) {
-                edges {
-                  node {
-                    title
-                    quantity
-                    originalUnitPriceSet { shopMoney { amount } }
-                    sku
+    try {
+      const SYNC_QUERY = `
+        #graphql
+        query SyncOrders($cursor: String) {
+          orders(first: 50, sortKey: CREATED_AT, reverse: true, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id
+                name
+                email
+                phone
+                totalPriceSet { shopMoney { amount currencyCode } }
+                displayFinancialStatus
+                displayFulfillmentStatus
+                lineItems(first: 50) {
+                  edges {
+                    node {
+                      title
+                      quantity
+                      originalUnitPriceSet { shopMoney { amount } }
+                      sku
+                    }
                   }
                 }
+                customer { firstName lastName }
+                shippingAddress { firstName lastName address1 address2 city phone }
               }
-              customer { firstName lastName }
-              shippingAddress { firstName lastName address1 address2 city phone }
             }
           }
         }
-      }
-    `);
-    const payload = await response.json();
-    if (payload.extensions?.cost) {
-      console.log("[syncOrders] GraphQL cost:", JSON.stringify(payload.extensions.cost));
+      `;
+
+      let cursor = null;
+      let synced = 0;
+
+      do {
+        const data = await graphqlQueryWithRetry(admin, SYNC_QUERY, { cursor }, "SyncOrders");
+        const page = data?.orders;
+        const nodes = page?.edges?.map(({ node }) => node) ?? [];
+
+        for (const node of nodes) {
+          let numericId;
+          try {
+            const idPart = node.id?.split("/").pop();
+            if (!idPart) { console.warn("[syncOrders] Skipping node with missing id:", node.id); continue; }
+            numericId = BigInt(idPart);
+          } catch (e) {
+            console.warn("[syncOrders] Skipping malformed GID:", node.id, e.message);
+            continue;
+          }
+
+          const customerName =
+            [node.shippingAddress?.firstName, node.shippingAddress?.lastName].filter(Boolean).join(" ") ||
+            [node.customer?.firstName, node.customer?.lastName].filter(Boolean).join(" ") || null;
+
+          const lineItems = (node.lineItems?.edges ?? []).map(({ node: li }) => ({
+            title: li.title ?? "",
+            price: li.originalUnitPriceSet?.shopMoney?.amount ?? "0",
+            quantity: li.quantity ?? 1,
+            sku: li.sku ?? "",
+          }));
+
+          const orderFields = {
+            shop: session.shop,
+            name: node.name ?? "",
+            email: node.email ?? null,
+            phone: node.phone ?? node.shippingAddress?.phone ?? null,
+            totalPrice: node.totalPriceSet?.shopMoney?.amount ?? "0",
+            currency: node.totalPriceSet?.shopMoney?.currencyCode ?? "",
+            financialStatus: (node.displayFinancialStatus ?? "").toLowerCase(),
+            fulfillmentStatus: (node.displayFulfillmentStatus ?? "").toLowerCase(),
+            lineItems,
+            customerName,
+            city: node.shippingAddress?.city ?? null,
+            address: [node.shippingAddress?.address1, node.shippingAddress?.address2].filter(Boolean).join(", ") || null,
+          };
+
+          await db.order.upsert({
+            where: { shopifyId: numericId },
+            update: orderFields,
+            create: { shopifyId: numericId, ...orderFields, bookingStatus: "pending" },
+          });
+          synced++;
+        }
+
+        cursor = page?.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;
+      } while (cursor);
+
+      return { ok: true, synced };
+    } catch (err) {
+      console.error("[syncOrders] failed:", err.message);
+      return { ok: false, error: "Unable to sync orders. Please try again." };
     }
-    if (payload.errors?.length) {
-      throw new Error(payload.errors.map((e) => e.message).join(", "));
-    }
-    const shopifyOrders = payload.data?.orders?.edges?.map(({ node }) => node) ?? [];
-    let synced = 0;
-    for (const node of shopifyOrders) {
-      let numericId;
-      try {
-        const idPart = node.id?.split("/").pop();
-        if (!idPart) { console.warn("[syncOrders] Skipping node with missing id:", node); continue; }
-        numericId = BigInt(idPart);
-      } catch (e) {
-        console.warn("[syncOrders] Skipping malformed GID:", node.id, e.message);
-        continue;
-      }
-      const customerName =
-        [node.shippingAddress?.firstName, node.shippingAddress?.lastName].filter(Boolean).join(" ") ||
-        [node.customer?.firstName, node.customer?.lastName].filter(Boolean).join(" ") || null;
-      const lineItems = node.lineItems.edges.map(({ node: li }) => ({
-        title: li.title,
-        price: li.originalUnitPriceSet.shopMoney.amount,
-        quantity: li.quantity,
-        sku: li.sku || "",
-      }));
-      const orderFields = {
-        shop: session.shop,
-        name: node.name,
-        email: node.email,
-        phone: node.phone || node.shippingAddress?.phone || null,
-        totalPrice: node.totalPriceSet.shopMoney.amount,
-        currency: node.totalPriceSet.shopMoney.currencyCode,
-        financialStatus: (node.financialStatus || "").toLowerCase(),
-        fulfillmentStatus: (node.displayFulfillmentStatus || "").toLowerCase(),
-        lineItems,
-        customerName,
-        city: node.shippingAddress?.city || null,
-        address: [node.shippingAddress?.address1, node.shippingAddress?.address2].filter(Boolean).join(", ") || null,
-      };
-      await db.order.upsert({
-        where: { shopifyId: numericId },
-        update: orderFields,
-        create: { shopifyId: numericId, ...orderFields, bookingStatus: "pending" },
-      });
-      synced++;
-    }
-    return { ok: true, synced };
   }
 
   if (intent === "book") {
@@ -216,7 +239,7 @@ export const action = async ({ request }) => {
       let shopifyFulfillmentState = "pending";
       try {
         const orderGid = `gid://shopify/Order/${order.shopifyId.toString()}`;
-        const foResponse = await admin.graphql(`
+        const foData = await graphqlQueryWithRetry(admin, `
           #graphql
           query GetFulfillmentOrders($orderId: ID!) {
             order(id: $orderId) {
@@ -225,16 +248,12 @@ export const action = async ({ request }) => {
               }
             }
           }
-        `, { variables: { orderId: orderGid } });
-        const foPayload = await foResponse.json();
-        if (foPayload.errors?.length) {
-          throw new Error(foPayload.errors.map((e) => e.message).join(", "));
-        }
-        if (!foPayload.data?.order) {
+        `, { orderId: orderGid }, "GetFulfillmentOrders:book");
+        if (!foData?.order) {
           console.warn(`[bookOne] order ${orderGid} returned null — may not exist in Shopify`);
         }
         const TERMINAL = new Set(["CLOSED", "CANCELLED", "INCOMPLETE"]);
-        const allFOs = foPayload.data?.order?.fulfillmentOrders?.edges?.map((e) => e.node) ?? [];
+        const allFOs = foData?.order?.fulfillmentOrders?.edges?.map((e) => e.node) ?? [];
         allFOs.forEach((fo) => {
           if (!TERMINAL.has(fo.status) && !["OPEN", "IN_PROGRESS", "SCHEDULED", "ON_HOLD"].includes(fo.status)) {
             console.warn(`[bookOne] Unexpected FO status "${fo.status}" for order ${order.name}`);
@@ -247,7 +266,7 @@ export const action = async ({ request }) => {
             mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
               fulfillmentCreateV2(fulfillment: $fulfillment) {
                 fulfillment { id status }
-                userErrors { field message code }
+                userErrors { field message }
               }
             }
           `, {
@@ -260,6 +279,7 @@ export const action = async ({ request }) => {
             },
           });
           const fulfillPayload = await fulfillMutation.json();
+          parseGraphQLResponse(fulfillPayload, "fulfillmentCreateV2", fulfillMutation);
           const fulfillment = fulfillPayload.data?.fulfillmentCreateV2?.fulfillment;
           const errors = fulfillPayload.data?.fulfillmentCreateV2?.userErrors ?? [];
           if (fulfillment?.id) {
@@ -628,6 +648,11 @@ export default function OrdersPage() {
             {fetcher.data?.synced !== undefined && fetcher.state === "idle" ? `Synced ${fetcher.data.synced}` : "Sync orders"}
           </button>
         </div>
+
+        {/* Sync error banner */}
+        {fetcher.state === "idle" && fetcher.data?.ok === false && fetcher.data?.error && !fetcher.data?.failures && (
+          <div style={S.errorBanner}>⚠ {fetcher.data.error}</div>
+        )}
 
         {/* Error banner */}
         {fetcher.data?.failures?.length > 0 && (

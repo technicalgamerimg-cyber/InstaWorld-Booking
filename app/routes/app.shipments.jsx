@@ -17,53 +17,63 @@ export const loader = async ({ request }) => {
 
   const orderWhere = { shop: session.shop, bookingStatus: "booked", trackingNumber: { not: null } };
 
-  const [orders, total, loadsheets] = await Promise.all([
-    db.order.findMany({
-      where: orderWhere,
-      orderBy: { createdAt: "desc" },
-      take: PAGE_SIZE,
-      skip,
-      select: {
-        id: true,
-        shopifyId: true,
-        name: true,
-        customerName: true,
-        phone: true,
-        city: true,
-        address: true,
-        email: true,
-        totalPrice: true,
-        currency: true,
-        financialStatus: true,
-        trackingNumber: true,
-        courierName: true,
-        shopifyFulfillmentId: true,
-        createdAt: true,
-      },
-    }),
-    db.order.count({ where: orderWhere }),
-    db.loadsheet.findMany({
-      where: { shop: session.shop },
-      orderBy: { generatedAt: "desc" },
-      take: 20,
-      select: { id: true, generatedAt: true, orderCount: true, totalCOD: true, filename: true },
-    }),
-  ]);
+  try {
+    const [orders, total, loadsheets] = await Promise.all([
+      db.order.findMany({
+        where: orderWhere,
+        orderBy: { createdAt: "desc" },
+        take: PAGE_SIZE,
+        skip,
+        select: {
+          id: true,
+          shopifyId: true,
+          name: true,
+          customerName: true,
+          phone: true,
+          city: true,
+          address: true,
+          email: true,
+          totalPrice: true,
+          currency: true,
+          financialStatus: true,
+          trackingNumber: true,
+          courierName: true,
+          shopifyFulfillmentId: true,
+          createdAt: true,
+        },
+      }),
+      db.order.count({ where: orderWhere }),
+      db.loadsheet.findMany({
+        where: { shop: session.shop },
+        orderBy: { generatedAt: "desc" },
+        take: 20,
+        select: { id: true, generatedAt: true, orderCount: true, totalCOD: true, filename: true },
+      }),
+    ]);
 
-  return {
-    orders: orders.map((o) => ({
-      ...o,
-      shopifyId: o.shopifyId.toString(),
-      createdAt: o.createdAt.toISOString(),
-    })),
-    pagination: {
-      page,
-      pageSize: PAGE_SIZE,
-      total,
-      totalPages: Math.ceil(total / PAGE_SIZE),
-    },
-    loadsheets: loadsheets.map((l) => ({ ...l, generatedAt: l.generatedAt.toISOString() })),
-  };
+    return {
+      orders: orders.map((o) => ({
+        ...o,
+        shopifyId: o.shopifyId.toString(),
+        createdAt: o.createdAt.toISOString(),
+      })),
+      pagination: {
+        page,
+        pageSize: PAGE_SIZE,
+        total,
+        totalPages: Math.ceil(total / PAGE_SIZE),
+      },
+      loadsheets: loadsheets.map((l) => ({ ...l, generatedAt: l.generatedAt.toISOString() })),
+    };
+  } catch (err) {
+    console.error("[loader:shipments] DB error:", err.message);
+    return {
+      orders: [],
+      pagination: { page: 1, pageSize: PAGE_SIZE, total: 0, totalPages: 0 },
+      loadsheets: [],
+      error: "Could not load shipments.",
+    };
+  }
 };
 
 // ─── Action ──────────────────────────────────────────────────────────────────
@@ -102,20 +112,19 @@ export const action = async ({ request }) => {
             mutation CancelFulfillment($id: ID!) {
               fulfillmentCancel(id: $id) {
                 fulfillment { id status }
-                userErrors { field message code }
+                userErrors { field message }
               }
             }
           `, { variables: { id: fulfillmentGid } });
           const cancelPayload = await cancelMutation.json();
+          if (cancelPayload.errors?.length) {
+            throw new Error(cancelPayload.errors.map((e) => e.message).join(", "));
+          }
           const cancelErrors = cancelPayload.data?.fulfillmentCancel?.userErrors ?? [];
           if (cancelErrors.length > 0) {
-            const codes = cancelErrors.map((e) => e.code).filter(Boolean);
             const msgs = cancelErrors.map((e) => e.message).join(", ");
             console.warn(`[FulfillmentCancel] ${order.name}:`, msgs);
-            const irreversibleCodes = new Set(["ALREADY_CANCELLED", "NOT_CANCELLABLE"]);
-            if (codes.length > 0) {
-              if (codes.some((c) => irreversibleCodes.has(c))) cancelObservation = "irreversible";
-            } else if (msgs.includes("cannot be cancelled") || msgs.includes("already cancelled")) {
+            if (msgs.includes("cannot be cancelled") || msgs.includes("already cancelled")) {
               cancelObservation = "irreversible";
             }
           } else {
@@ -135,6 +144,9 @@ export const action = async ({ request }) => {
           }
         `, { variables: { orderId: orderGid } });
         const foPayload = await foResponse.json();
+        if (foPayload.errors?.length) {
+          throw new Error(foPayload.errors.map((e) => e.message).join(", "));
+        }
         if (!foPayload.data?.order) {
           console.warn(`[cancelOne] order ${orderGid} returned null — may not exist in Shopify`);
         }
@@ -154,6 +166,9 @@ export const action = async ({ request }) => {
               }
             `, { variables: { id: fo.id } });
             const foCancelPayload = await foCancelMutation.json();
+            if (foCancelPayload.errors?.length) {
+              throw new Error(foCancelPayload.errors.map((e) => e.message).join(", "));
+            }
             const foErrors = foCancelPayload.data?.fulfillmentOrderCancel?.userErrors ?? [];
             if (foErrors.length > 0) {
               console.warn(`[FOCancel] ${order.name} FO ${fo.id}:`, foErrors.map((e) => e.message).join(", "));
