@@ -213,7 +213,7 @@ export default function OnboardingWizard({ onComplete }) {
 
           {step === 1 && (
             <>
-              <h2 style={S.headline}>Welcome to InstaWorld Booking</h2>
+              <h2 style={S.headline}>Welcome to Instant Bulk Booking</h2>
               <p style={S.subline}>
                 Book couriers, print AWB labels, and generate dispatch loadsheets — all from inside Shopify.
                 Let's get you set up in 3 quick steps.

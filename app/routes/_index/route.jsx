@@ -18,7 +18,7 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>InstaWorld Booking</h1>
+        <h1 className={styles.heading}>Instant Bulk Booking</h1>
         <p className={styles.text}>
           Sync your Shopify orders and book InstaWorld courier pickups — all from your Shopify Admin.
         </p>
