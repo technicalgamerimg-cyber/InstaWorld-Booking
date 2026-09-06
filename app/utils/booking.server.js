@@ -3,10 +3,13 @@ import { createShipment } from "./instaworld.server";
 import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server";
 
 // Books a single order with InstaWorld and creates the matching Shopify fulfillment.
-// Shared by the Orders page bulk/single "Book" action and the order-details admin action extension.
+// Shared by the Orders page bulk/single "Book" action and the order-details/order-index
+// admin action extensions. addressOverride/phoneOverride let the merchant correct the
+// consignee address or phone right before booking without touching the Shopify order or
+// our own Order record — they're a one-time substitution for this shipment's payload only.
 // Throws on hard failure (e.g. InstaWorld rejected the shipment); Shopify fulfillment
 // errors are recorded on the order but do not throw, since InstaWorld is the source of truth.
-export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions }) {
+export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride }) {
   const nameParts = (order.customerName || "Customer").split(" ");
 
   const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
@@ -20,14 +23,17 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
       }))
     : [{ title: "Item", price: parseFloat(order.totalPrice || "0"), quantity: 1, sku: "", kg: weightKg }];
 
+  const address = (addressOverride || "").trim() || order.address || order.city || "";
+  const phone = (phoneOverride || "").trim() || order.phone || "";
+
   const payload = {
     api_key: apiKey,
     ref_no: (order.name || String(order.id)).replace("#", ""),
     consignee_first_name: nameParts[0] || "Customer",
     consignee_last_name: nameParts.slice(1).join(" ") || "",
     consignee_email: order.email || "",
-    consignee_phone: order.phone || "",
-    consignee_address: order.address || order.city || "",
+    consignee_phone: phone,
+    consignee_address: address,
     consignee_city: order.city || "",
     amount: codAmount,
     financial_status: order.financialStatus === "paid" ? "paid" : "cod",

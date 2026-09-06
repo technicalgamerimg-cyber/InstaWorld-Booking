@@ -16,6 +16,8 @@ function orderSummary(order) {
     name: order.name,
     customerName: order.customerName,
     city: order.city,
+    address: order.address,
+    phone: order.phone,
     currency: order.currency,
     financialStatus: order.financialStatus,
     totalPrice: order.totalPrice,
@@ -111,6 +113,8 @@ export const action = async ({ request }) => {
       weightKg,
       codAmount,
       instructions,
+      addressOverride: body.address,
+      phoneOverride: body.phone,
     });
 
     return cors(Response.json({ ok: true, trackingNumber: result.trackingNumber }));

@@ -13,13 +13,14 @@ export default async () => {
 function Extension() {
   const { i18n, close, data, auth } = shopify;
   const orderGids = data.selected.map((r) => r.id);
-  const count = orderGids.length;
 
   const [phase, setPhase] = useState("loading"); // loading | ready | submitting | results | loadError
+  const [orders, setOrders] = useState([]);
   const [hasApiKey, setHasApiKey] = useState(true);
   const [weight, setWeight] = useState("1000");
   const [cod, setCod] = useState("");
   const [instructions, setInstructions] = useState("");
+  const [rows, setRows] = useState({}); // { [orderId]: { address, phone } }
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
 
@@ -37,13 +38,18 @@ function Extension() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await authedFetch("/api/book-orders-bulk");
+        const qs = orderGids.map((id) => `orderId=${encodeURIComponent(id)}`).join("&");
+        const res = await authedFetch(`/api/book-orders-bulk?${qs}`);
         const json = await res.json();
-        if (!json.ok) throw new Error(json.error || "Failed to load settings");
+        if (!json.ok) throw new Error(json.error || "Failed to load orders");
 
+        setOrders(json.orders);
         setHasApiKey(json.settings.hasApiKey);
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
         setInstructions(json.settings.defaultInstructions || "");
+        setRows(Object.fromEntries(
+          json.orders.map((o) => [o.id, { address: o.address || "", phone: o.phone || "" }])
+        ));
         setPhase("ready");
       } catch (e) {
         console.error("[instant-book-orders-bulk] load failed:", e.message);
@@ -53,14 +59,25 @@ function Extension() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const bookable = orders.filter((o) => !o.alreadyBooked);
+  const alreadyBookedCount = orders.length - bookable.length;
+
+  const setRow = (id, key) => (e) =>
+    setRows((r) => ({ ...r, [id]: { ...r[id], [key]: e.currentTarget.value } }));
+
   const handleConfirm = async () => {
     setError(null);
     setPhase("submitting");
     try {
+      const items = bookable.map((o) => ({
+        orderId: o.id,
+        address: rows[o.id]?.address,
+        phone: rows[o.id]?.phone,
+      }));
       const res = await authedFetch("/api/book-orders-bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderIds: orderGids, weight, cod, instructions }),
+        body: JSON.stringify({ items, weight, cod, instructions }),
       });
       const json = await res.json();
       if (!json.ok && !("succeeded" in json)) {
@@ -133,37 +150,67 @@ function Extension() {
         {!hasApiKey && <s-banner tone="warning">{i18n.translate("notConfigured")}</s-banner>}
         {error && <s-banner tone="critical">{error}</s-banner>}
 
-        <s-text type="strong">{i18n.translate("selectedCount", { count })}</s-text>
+        <s-text type="strong">
+          {alreadyBookedCount > 0
+            ? i18n.translate("selectedCountWithSkipped", { count: bookable.length, skipped: alreadyBookedCount })
+            : i18n.translate("selectedCount", { count: bookable.length })}
+        </s-text>
 
-        <s-number-field
-          label={i18n.translate("weightLabel")}
-          details={i18n.translate("weightDetails")}
-          value={weight}
-          min="0"
-          onInput={(e) => setWeight(e.currentTarget.value)}
-        />
-        <s-number-field
-          label={i18n.translate("codLabel")}
-          details={i18n.translate("codDetails")}
-          value={cod}
-          min="0"
-          onInput={(e) => setCod(e.currentTarget.value)}
-        />
+        <s-stack direction="inline" gap="base">
+          <s-number-field
+            label={i18n.translate("weightLabel")}
+            details={i18n.translate("weightDetails")}
+            value={weight}
+            min="0"
+            onInput={(e) => setWeight(e.currentTarget.value)}
+          />
+          <s-number-field
+            label={i18n.translate("codLabel")}
+            details={i18n.translate("codDetails")}
+            value={cod}
+            min="0"
+            onInput={(e) => setCod(e.currentTarget.value)}
+          />
+        </s-stack>
         <s-text-area
           label={i18n.translate("instructionsLabel")}
           value={instructions}
           onInput={(e) => setInstructions(e.currentTarget.value)}
         />
+
+        <s-text type="strong">{i18n.translate("reviewHeading")}</s-text>
+        <s-stack direction="block" gap="base">
+          {bookable.map((o) => (
+            <s-box key={o.id} padding="base" border="base" borderRadius="base">
+              <s-stack direction="block" gap="small-200">
+                <s-text type="strong">{o.name} — {o.customerName || "—"}</s-text>
+                <s-stack direction="inline" gap="base">
+                  <s-text-field
+                    label={i18n.translate("addressLabel")}
+                    value={rows[o.id]?.address ?? ""}
+                    placeholder={o.city || ""}
+                    onInput={setRow(o.id, "address")}
+                  />
+                  <s-text-field
+                    label={i18n.translate("phoneLabel")}
+                    value={rows[o.id]?.phone ?? ""}
+                    onInput={setRow(o.id, "phone")}
+                  />
+                </s-stack>
+              </s-stack>
+            </s-box>
+          ))}
+        </s-stack>
       </s-stack>
 
       <s-button
         slot="primary-action"
         variant="primary"
         loading={submitting}
-        disabled={submitting || !hasApiKey}
+        disabled={submitting || !hasApiKey || bookable.length === 0}
         onClick={handleConfirm}
       >
-        {submitting ? i18n.translate("booking") : i18n.translate("confirm", { count })}
+        {submitting ? i18n.translate("booking") : i18n.translate("confirm", { count: bookable.length })}
       </s-button>
       <s-button slot="secondary-actions" disabled={submitting} onClick={() => close()}>
         {i18n.translate("cancel")}

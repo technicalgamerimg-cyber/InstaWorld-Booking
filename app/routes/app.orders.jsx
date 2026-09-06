@@ -25,6 +25,7 @@ export const loader = async ({ request }) => {
           name: true,
           customerName: true,
           phone: true,
+          address: true,
           city: true,
           totalPrice: true,
           currency: true,
@@ -170,6 +171,10 @@ export const action = async ({ request }) => {
     const weightGrams = form.get("weight") ? parseFloat(form.get("weight")) : null;
     const customCod = form.get("cod") !== null && form.get("cod") !== "" ? parseFloat(form.get("cod")) : null;
     const instructions = form.get("instructions") || null;
+    // Per-order address/phone corrections entered right before booking — one-time
+    // overrides for the InstaWorld payload only, never written back to the Order
+    // record or the Shopify order. Keyed by the same numeric order.id as `ids`.
+    const overrides = form.get("overrides") ? JSON.parse(form.get("overrides")) : {};
 
     const shopSettings = await db.settings.findUnique({ where: { shop: session.shop } });
     // admin is captured from the outer destructure and available to bookOne via closure
@@ -196,6 +201,7 @@ export const action = async ({ request }) => {
       }
 
       const codAmount = customCod !== null ? customCod : defaultCodValue(order);
+      const override = overrides[order.id] || {};
 
       return bookOrderShipment({
         admin,
@@ -204,6 +210,8 @@ export const action = async ({ request }) => {
         weightKg,
         codAmount,
         instructions: instructions ?? shopSettings.defaultInstructions ?? "",
+        addressOverride: override.address,
+        phoneOverride: override.phone,
       });
     };
 
@@ -309,15 +317,6 @@ const S = {
     fontSize: "13px",
     marginRight: "6px",
   },
-  btnOptions: {
-    padding: "5px 10px",
-    background: "#fff",
-    color: "#202223",
-    border: "1px solid #c9cccf",
-    borderRadius: "5px",
-    cursor: "pointer",
-    fontSize: "13px",
-  },
   btnBulkBook: {
     padding: "6px 16px",
     background: "#202223",
@@ -382,6 +381,8 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
     pieces: "1",
     cod,
     instructions: settings?.defaultInstructions || "",
+    address: order.address || "",
+    phone: order.phone || "",
   });
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -420,6 +421,28 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
               </div>
             ))}
           </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Delivery address</label>
+              <input
+                type="text"
+                value={form.address}
+                onChange={set("address")}
+                placeholder={order.city || "No address on file"}
+                style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Phone number</label>
+              <input
+                type="text"
+                value={form.phone}
+                onChange={set("phone")}
+                placeholder="No phone on file"
+                style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
+              />
+            </div>
+          </div>
           <div>
             <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Special instructions</label>
             <textarea
@@ -444,6 +467,121 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
   );
 }
 
+function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
+  const defaultWeightGrams = String(Math.round((settings?.defaultWeight || 1) * 1000));
+  const [shared, setShared] = useState({
+    weight: defaultWeightGrams,
+    cod: "",
+    instructions: settings?.defaultInstructions || "",
+  });
+  const [rows, setRows] = useState(() =>
+    Object.fromEntries(orders.map((o) => [o.id, { address: o.address || "", phone: o.phone || "" }]))
+  );
+
+  const setShare = (k) => (e) => setShared((f) => ({ ...f, [k]: e.target.value }));
+  const setRow = (id, k) => (e) =>
+    setRows((r) => ({ ...r, [id]: { ...r[id], [k]: e.target.value } }));
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "#fff", borderRadius: "10px", width: "760px", maxWidth: "95vw", maxHeight: "90vh", boxShadow: "0 8px 32px rgba(0,0,0,0.2)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        {/* Header */}
+        <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid #e1e3e5", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div style={{ fontWeight: "700", fontSize: "16px" }}>
+            🛵 Bulk booking — {orders.length} orders
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#6d7175", lineHeight: 1 }}>✕</button>
+        </div>
+        {/* Body */}
+        <div style={{ padding: "18px 20px", overflowY: "auto" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Weight (grams) — applied to all</label>
+              <input
+                type="number"
+                value={shared.weight}
+                onChange={setShare("weight")}
+                style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>COD override (optional)</label>
+              <input
+                type="number"
+                value={shared.cod}
+                onChange={setShare("cod")}
+                placeholder="Leave blank to use each order's total"
+                style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
+              />
+            </div>
+          </div>
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Special instructions — applied to all</label>
+            <textarea
+              value={shared.instructions}
+              onChange={setShare("instructions")}
+              rows={2}
+              style={{ width: "100%", border: "1px solid #5c6ac4", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", resize: "vertical", boxSizing: "border-box", outline: "none" }}
+            />
+          </div>
+
+          <div style={{ fontSize: "12px", fontWeight: "600", color: "#6d7175", marginBottom: "6px" }}>
+            Review and correct each order's delivery address / phone before booking
+          </div>
+          <div style={{ border: "1px solid #e1e3e5", borderRadius: "6px", overflow: "hidden" }}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  {["Order", "Address", "Phone"].map((h) => (
+                    <th key={h} style={S.th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((o) => (
+                  <tr key={o.id}>
+                    <td style={{ ...S.td, whiteSpace: "nowrap" }}>
+                      <div style={{ fontWeight: "600" }}>{o.name || `#${o.shopifyId}`}</div>
+                      <div style={{ color: "#6d7175", fontSize: "12px" }}>{o.customerName || "—"}</div>
+                    </td>
+                    <td style={S.td}>
+                      <input
+                        type="text"
+                        value={rows[o.id]?.address ?? ""}
+                        onChange={setRow(o.id, "address")}
+                        placeholder={o.city || "No address on file"}
+                        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
+                      />
+                    </td>
+                    <td style={S.td}>
+                      <input
+                        type="text"
+                        value={rows[o.id]?.phone ?? ""}
+                        onChange={setRow(o.id, "phone")}
+                        placeholder="No phone on file"
+                        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {/* Footer */}
+        <div style={{ padding: "12px 20px 18px", display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid #e1e3e5" }}>
+          <button onClick={onClose} style={{ padding: "8px 20px", background: "#fff", border: "1px solid #c9cccf", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}>
+            Cancel
+          </button>
+          <button onClick={() => onConfirm(shared, rows)} style={{ padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}>
+            Confirm booking ({orders.length})
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OrdersPage() {
@@ -452,6 +590,7 @@ export default function OrdersPage() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(new Set());
   const [modalOrder, setModalOrder] = useState(null);
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
   const [submittingId, setSubmittingId] = useState(null);
   const prevState = useRef("idle");
 
@@ -491,14 +630,6 @@ export default function OrdersPage() {
     });
   };
 
-  const submitBook = (ids, rowId = null) => {
-    if (rowId !== null) setSubmittingId(rowId);
-    fetcher.submit(
-      { intent: "book", orderIds: JSON.stringify(ids) },
-      { method: "POST" }
-    );
-  };
-
   const handleConfirmModal = (form) => {
     setSubmittingId(modalOrder.id);
     fetcher.submit(
@@ -509,10 +640,27 @@ export default function OrdersPage() {
         pieces: form.pieces,
         cod: form.cod,
         instructions: form.instructions,
+        overrides: JSON.stringify({ [modalOrder.id]: { address: form.address, phone: form.phone } }),
       },
       { method: "POST" }
     );
     setModalOrder(null);
+  };
+
+  const handleConfirmBulkModal = (shared, rows) => {
+    const ids = [...selected];
+    fetcher.submit(
+      {
+        intent: "book",
+        orderIds: JSON.stringify(ids),
+        weight: shared.weight,
+        cod: shared.cod,
+        instructions: shared.instructions,
+        overrides: JSON.stringify(rows),
+      },
+      { method: "POST" }
+    );
+    setBulkModalOpen(false);
   };
 
   const isSubmitting = fetcher.state !== "idle";
@@ -572,7 +720,7 @@ export default function OrdersPage() {
             <button
               style={S.btnBulkBook}
               disabled={isSubmitting}
-              onClick={() => submitBook([...selected])}
+              onClick={() => setBulkModalOpen(true)}
             >
               {isSubmitting ? "Booking…" : `Book (${selected.size})`}
             </button>
@@ -655,24 +803,15 @@ export default function OrdersPage() {
                         {booked ? (
                           <span style={{ color: "#6d7175", fontSize: "13px" }}>Booked ✓</span>
                         ) : (
-                          <>
-                            <button
-                              style={submittingId === order.id && isSubmitting ? S.btnBookDisabled : S.btnBook}
-                              disabled={isSubmitting}
-                              onClick={() => submitBook([order.id], order.id)}
-                            >
-                              {submittingId === order.id && isSubmitting
-                                ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Booking…</>
-                                : "Book"}
-                            </button>
-                            <button
-                              style={S.btnOptions}
-                              disabled={isSubmitting}
-                              onClick={() => setModalOrder(order)}
-                            >
-                              ⚙ Options
-                            </button>
-                          </>
+                          <button
+                            style={submittingId === order.id && isSubmitting ? S.btnBookDisabled : S.btnBook}
+                            disabled={isSubmitting}
+                            onClick={() => setModalOrder(order)}
+                          >
+                            {submittingId === order.id && isSubmitting
+                              ? <><span style={{ display: "inline-block", animation: "spin 0.7s linear infinite" }}>⟳</span> Booking…</>
+                              : "Book"}
+                          </button>
                         )}
                       </td>
                     </tr>
@@ -691,6 +830,16 @@ export default function OrdersPage() {
           settings={settings}
           onClose={() => setModalOrder(null)}
           onConfirm={handleConfirmModal}
+        />
+      )}
+
+      {/* Bulk Booking Modal */}
+      {bulkModalOpen && (
+        <BulkBookingModal
+          orders={orders.filter((o) => selected.has(o.id))}
+          settings={settings}
+          onClose={() => setBulkModalOpen(false)}
+          onConfirm={handleConfirmBulkModal}
         />
       )}
 

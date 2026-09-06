@@ -4,6 +4,8 @@
   "alreadyBooked": "This order is already booked. Tracking number: {{trackingNumber}}",
   "loadError": "Could not load this order. Close and try again.",
   "notConfigured": "InstaWorld API key not configured. Go to the app's Settings page first.",
+  "addressLabel": "Delivery address",
+  "phoneLabel": "Phone number",
   "weightLabel": "Weight (grams)",
   "codLabel": "COD amount",
   "instructionsLabel": "Special instructions",

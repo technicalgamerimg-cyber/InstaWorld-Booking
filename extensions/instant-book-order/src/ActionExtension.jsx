@@ -25,6 +25,8 @@ function Extension() {
   const [weight, setWeight] = useState("1000");
   const [cod, setCod] = useState("0");
   const [instructions, setInstructions] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
   const [error, setError] = useState(null);
   const [trackingNumber, setTrackingNumber] = useState(null);
 
@@ -53,6 +55,8 @@ function Extension() {
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
         setCod(defaultCod(json.order));
         setInstructions(json.settings.defaultInstructions || "");
+        setAddress(json.order.address || "");
+        setPhone(json.order.phone || "");
         setPhase("ready");
       } catch (e) {
         console.error("[instant-book-order] load failed:", e.message);
@@ -69,7 +73,7 @@ function Extension() {
       const res = await authedFetch("/api/book-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: orderGid, weight, cod, instructions }),
+        body: JSON.stringify({ orderId: orderGid, weight, cod, instructions, address, phone }),
       });
       const json = await res.json();
       if (!json.ok) {
@@ -146,6 +150,18 @@ function Extension() {
         <s-text type="strong">
           {order.name} — {order.customerName || "—"}{order.city ? `, ${order.city}` : ""}
         </s-text>
+
+        <s-text-field
+          label={i18n.translate("addressLabel")}
+          value={address}
+          placeholder={order.city || ""}
+          onInput={(e) => setAddress(e.currentTarget.value)}
+        />
+        <s-text-field
+          label={i18n.translate("phoneLabel")}
+          value={phone}
+          onInput={(e) => setPhone(e.currentTarget.value)}
+        />
 
         <s-number-field
           label={i18n.translate("weightLabel")}
