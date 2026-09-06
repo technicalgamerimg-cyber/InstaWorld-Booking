@@ -1,0 +1,12 @@
+api_version = "2025-10"
+[[extensions]]
+# Change the merchant-facing name of the extension in locales/en.default.json
+name = "t:name"
+handle = "instant-book-orders-bulk"
+type = "ui_extension"
+uid = "f7091dc8-60f8-5eb4-099f-c9e0d94da6531f6148df"
+
+# Only 1 target can be specified for each Admin action extension
+[[extensions.targeting]]
+module = "./src/ActionExtension.jsx"
+target = "admin.order-index.selection-action.render"

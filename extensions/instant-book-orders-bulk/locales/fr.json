@@ -1,0 +1,18 @@
+{
+  "name": "Réserver avec Instant Bulk Booking",
+  "title": "Réserver avec Instant Bulk Booking",
+  "selectedCount": "{{count}} commandes sélectionnées",
+  "loadError": "Impossible de charger les paramètres de réservation. Fermez et réessayez.",
+  "notConfigured": "Clé API InstaWorld non configurée. Rendez-vous d'abord sur la page Paramètres de l'application.",
+  "weightLabel": "Poids (grammes)",
+  "weightDetails": "Appliqué à chaque commande de ce lot",
+  "codLabel": "Montant COD (optionnel)",
+  "codDetails": "Laissez vide pour utiliser le total de chaque commande (ou 0 si déjà payée)",
+  "instructionsLabel": "Instructions spéciales",
+  "confirm": "Réserver {{count}} commandes",
+  "cancel": "Annuler",
+  "booking": "Réservation…",
+  "resultSummary": "{{succeeded}} réservées, {{skipped}} déjà réservées ignorées, {{failed}} échouées",
+  "resultAllSucceeded": "Les {{succeeded}} commandes ont été réservées avec succès.",
+  "close": "Fermer"
+}
