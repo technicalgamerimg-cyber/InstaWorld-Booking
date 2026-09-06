@@ -20,12 +20,15 @@ export const action = async ({ request }) => {
       await db.webhookDelivery.create({ data: { webhookId } });
     }
 
-    // Out-of-order guard — skip stale payloads that arrived after a newer update
+    // Out-of-order guard — skip stale payloads that arrived after a newer update.
+    // Compares against Shopify's own updated_at (shopifyUpdatedAt), not Prisma's
+    // @updatedAt, which also gets bumped by unrelated local writes (e.g. booking
+    // actions) and would otherwise cause genuinely newer webhooks to be dropped.
     const existingOrder = await db.order.findUnique({
       where: { shopifyId: BigInt(o.id) },
-      select: { updatedAt: true },
+      select: { shopifyUpdatedAt: true },
     });
-    if (existingOrder && new Date(o.updated_at) <= existingOrder.updatedAt) {
+    if (existingOrder?.shopifyUpdatedAt && new Date(o.updated_at) <= existingOrder.shopifyUpdatedAt) {
       return new Response(null, { status: 200 });
     }
 
@@ -50,6 +53,7 @@ export const action = async ({ request }) => {
           customerName,
           city: o.shipping_address?.city || null,
           address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
+          shopifyUpdatedAt: o.updated_at ? new Date(o.updated_at) : null,
         },
         create: {
           shopifyId: BigInt(o.id),
@@ -64,6 +68,7 @@ export const action = async ({ request }) => {
           lineItems: o.line_items ?? [],
           customerName,
           city: o.shipping_address?.city || null,
+          shopifyUpdatedAt: o.updated_at ? new Date(o.updated_at) : null,
           address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
           bookingStatus: "pending",
         },

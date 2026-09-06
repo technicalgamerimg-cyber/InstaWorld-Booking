@@ -1,0 +1,15 @@
+{
+  "name": "Book with Instant Bulk Booking",
+  "title": "Book with Instant Bulk Booking",
+  "alreadyBooked": "This order is already booked. Tracking number: {{trackingNumber}}",
+  "loadError": "Could not load this order. Close and try again.",
+  "notConfigured": "InstaWorld API key not configured. Go to the app's Settings page first.",
+  "weightLabel": "Weight (grams)",
+  "codLabel": "COD amount",
+  "instructionsLabel": "Special instructions",
+  "confirm": "Confirm booking",
+  "cancel": "Cancel",
+  "booking": "Booking…",
+  "success": "Booked! Tracking number: {{trackingNumber}}",
+  "close": "Close"
+}

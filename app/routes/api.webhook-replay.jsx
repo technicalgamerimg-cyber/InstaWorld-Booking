@@ -16,6 +16,19 @@ export const action = async ({ request }) => {
     [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(" ") ||
     null;
 
+  // Same out-of-order guard as api.webhooks.jsx — if a newer update already landed
+  // (e.g. a later webhook succeeded after this one failed), replaying this stale
+  // payload would regress the order back to older data. Drop the dead-letter row
+  // instead of applying it.
+  const existingOrder = await db.order.findUnique({
+    where: { shopifyId: BigInt(o.id) },
+    select: { shopifyUpdatedAt: true },
+  });
+  if (existingOrder?.shopifyUpdatedAt && o.updated_at && new Date(o.updated_at) <= existingOrder.shopifyUpdatedAt) {
+    await db.webhookFailure.delete({ where: { id: failure.id } });
+    return { ok: true, skipped: "superseded" };
+  }
+
   try {
     await db.order.upsert({
       where: { shopifyId: BigInt(o.id) },
@@ -32,6 +45,7 @@ export const action = async ({ request }) => {
         customerName,
         city: o.shipping_address?.city || null,
         address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
+        shopifyUpdatedAt: o.updated_at ? new Date(o.updated_at) : null,
       },
       create: {
         shopifyId: BigInt(o.id),
@@ -47,6 +61,7 @@ export const action = async ({ request }) => {
         customerName,
         city: o.shipping_address?.city || null,
         address: [o.shipping_address?.address1, o.shipping_address?.address2].filter(Boolean).join(", ") || null,
+        shopifyUpdatedAt: o.updated_at ? new Date(o.updated_at) : null,
         bookingStatus: "pending",
       },
     });

@@ -50,6 +50,7 @@ model Order {
   shopifyFulfillmentError Json?
   shopifyFulfillmentState String?  @default("pending")
   shopifySyncStatus       String?  @default("pending")
+  shopifyUpdatedAt        DateTime?
   createdAt               DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

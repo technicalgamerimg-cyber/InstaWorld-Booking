@@ -1,0 +1,15 @@
+{
+  "name": "Réserver avec Instant Bulk Booking",
+  "title": "Réserver avec Instant Bulk Booking",
+  "alreadyBooked": "Cette commande est déjà réservée. Numéro de suivi : {{trackingNumber}}",
+  "loadError": "Impossible de charger cette commande. Fermez et réessayez.",
+  "notConfigured": "Clé API InstaWorld non configurée. Rendez-vous d'abord sur la page Paramètres de l'application.",
+  "weightLabel": "Poids (grammes)",
+  "codLabel": "Montant COD",
+  "instructionsLabel": "Instructions spéciales",
+  "confirm": "Confirmer la réservation",
+  "cancel": "Annuler",
+  "booking": "Réservation…",
+  "success": "Réservé ! Numéro de suivi : {{trackingNumber}}",
+  "close": "Fermer"
+}
