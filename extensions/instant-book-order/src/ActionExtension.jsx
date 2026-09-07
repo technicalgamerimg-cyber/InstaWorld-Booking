@@ -288,7 +288,7 @@ function Extension() {
         slot="primary-action"
         variant="primary"
         loading={submitting}
-        disabled={submitting || !hasApiKey || !cityId}
+        disabled={submitting || !hasApiKey || !cityId || !address.trim() || !phone.trim()}
         onClick={handleConfirm}
       >
         {submitting ? i18n.translate("booking") : i18n.translate("confirm")}

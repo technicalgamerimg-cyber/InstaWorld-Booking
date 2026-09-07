@@ -155,7 +155,10 @@ function Extension() {
 
   const bookable = orders.filter((o) => !o.alreadyBooked);
   const alreadyBookedCount = orders.length - bookable.length;
-  const missingCity = bookable.filter((o) => !rows[o.id]?.cityId).length;
+  const incompleteCount = bookable.filter((o) => {
+    const r = rows[o.id];
+    return !r?.cityId || !r?.address?.trim() || !r?.phone?.trim();
+  }).length;
 
   const setRow = (id, key) => (e) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], [key]: e.currentTarget.value } }));
@@ -311,13 +314,13 @@ function Extension() {
         slot="primary-action"
         variant="primary"
         loading={submitting}
-        disabled={submitting || !hasApiKey || bookable.length === 0 || missingCity > 0}
+        disabled={submitting || !hasApiKey || bookable.length === 0 || incompleteCount > 0}
         onClick={handleConfirm}
       >
         {submitting
           ? i18n.translate("booking")
-          : missingCity > 0
-            ? i18n.translate("confirmMissingCity", { count: missingCity })
+          : incompleteCount > 0
+            ? i18n.translate("confirmMissingCity", { count: incompleteCount })
             : i18n.translate("confirm", { count: bookable.length })}
       </s-button>
       <s-button slot="secondary-actions" disabled={submitting} onClick={() => close()}>

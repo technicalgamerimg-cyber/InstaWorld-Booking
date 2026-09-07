@@ -31,6 +31,11 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
   const phone = (phoneOverride || "").trim() || order.phone || "";
   const city = (cityOverride || "").trim() || order.city || "";
 
+  const label = order.name || String(order.id);
+  if (!address) throw new Error(`${label}: Delivery address is required`);
+  if (!phone) throw new Error(`${label}: Phone number is required`);
+  if (!city) throw new Error(`${label}: InstaWorld city is required`);
+
   const payload = {
     api_key: apiKey,
     ref_no: (order.name || String(order.id)).replace("#", ""),

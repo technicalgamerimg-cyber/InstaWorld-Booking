@@ -485,6 +485,7 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
   });
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const incomplete = !form.cityId || !form.address.trim() || !form.phone.trim();
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -522,22 +523,26 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Delivery address</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>
+                Delivery address <span style={{ color: "#d82c0d" }}>*</span>
+              </label>
               <input
                 type="text"
                 value={form.address}
                 onChange={set("address")}
-                placeholder={order.city || "No address on file"}
+                placeholder="Required"
                 style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
               />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Phone number</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>
+                Phone number <span style={{ color: "#d82c0d" }}>*</span>
+              </label>
               <input
                 type="text"
                 value={form.phone}
                 onChange={set("phone")}
-                placeholder="No phone on file"
+                placeholder="Required"
                 style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
               />
             </div>
@@ -565,9 +570,9 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
           </button>
           <button
             onClick={() => onConfirm(form)}
-            disabled={!form.cityId}
-            title={!form.cityId ? "Select an InstaWorld city first" : undefined}
-            style={!form.cityId
+            disabled={incomplete}
+            title={incomplete ? "Address, phone, and InstaWorld city are all required" : undefined}
+            style={incomplete
               ? { padding: "8px 20px", background: "#c9cccf", color: "#fff", border: "none", borderRadius: "6px", cursor: "not-allowed", fontWeight: "600" }
               : { padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}
           >
@@ -600,7 +605,10 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
   const setRowCity = (id) => (cityId) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], cityId } }));
 
-  const missingCity = orders.filter((o) => !rows[o.id]?.cityId).length;
+  const incompleteCount = orders.filter((o) => {
+    const r = rows[o.id];
+    return !r?.cityId || !r?.address?.trim() || !r?.phone?.trim();
+  }).length;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -652,7 +660,7 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
             <table style={S.table}>
               <thead>
                 <tr>
-                  {["Order", "Address", "Phone", "InstaWorld city *"].map((h) => (
+                  {["Order", "Address *", "Phone *", "InstaWorld city *"].map((h) => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -669,8 +677,8 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
                         type="text"
                         value={rows[o.id]?.address ?? ""}
                         onChange={setRow(o.id, "address")}
-                        placeholder={o.city || "No address on file"}
-                        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
+                        placeholder="Required"
+                        style={{ width: "100%", border: rows[o.id]?.address?.trim() ? "1px solid #c9cccf" : "1px solid #d82c0d", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
                       />
                     </td>
                     <td style={S.td}>
@@ -678,8 +686,8 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
                         type="text"
                         value={rows[o.id]?.phone ?? ""}
                         onChange={setRow(o.id, "phone")}
-                        placeholder="No phone on file"
-                        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
+                        placeholder="Required"
+                        style={{ width: "100%", border: rows[o.id]?.phone?.trim() ? "1px solid #c9cccf" : "1px solid #d82c0d", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
                       />
                     </td>
                     <td style={{ ...S.td, minWidth: "170px" }}>
@@ -693,9 +701,9 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
         </div>
         {/* Footer */}
         <div style={{ padding: "12px 20px 18px", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "10px", borderTop: "1px solid #e1e3e5" }}>
-          {missingCity > 0 && (
+          {incompleteCount > 0 && (
             <span style={{ color: "#d82c0d", fontSize: "12px", marginRight: "auto" }}>
-              {missingCity} order{missingCity !== 1 ? "s" : ""} still need{missingCity === 1 ? "s" : ""} a city
+              {incompleteCount} order{incompleteCount !== 1 ? "s" : ""} still need{incompleteCount === 1 ? "s" : ""} an address, phone, and/or city
             </span>
           )}
           <button onClick={onClose} style={{ padding: "8px 20px", background: "#fff", border: "1px solid #c9cccf", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}>
@@ -703,9 +711,9 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
           </button>
           <button
             onClick={() => onConfirm(shared, rows)}
-            disabled={missingCity > 0}
-            title={missingCity > 0 ? "Select an InstaWorld city for every order first" : undefined}
-            style={missingCity > 0
+            disabled={incompleteCount > 0}
+            title={incompleteCount > 0 ? "Every order needs an address, phone, and InstaWorld city" : undefined}
+            style={incompleteCount > 0
               ? { padding: "8px 20px", background: "#c9cccf", color: "#fff", border: "none", borderRadius: "6px", cursor: "not-allowed", fontWeight: "600" }
               : { padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}
           >
