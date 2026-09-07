@@ -29,14 +29,16 @@ function findCityId(cities, cityName) {
 // registers first) — without this it stayed open indefinitely once you moved to
 // another field without picking, pushing everything below it down the page.
 //
-// query is seeded once at mount from value/cities and otherwise fully owned by
-// this component's own handlers — there used to be a useEffect re-deriving query
-// from value on every value change, but it raced against typing: the first
-// keystroke on an already-picked field calls onChange("") to invalidate the old
-// pick, which changed `value`, which re-ran that effect, which reset query back
-// to "" a moment later — wiping out the character just typed.
+// The field is deliberately UNCONTROLLED (defaultValue, not value): s-text-field
+// is a custom element with its own internal value property, and re-asserting
+// `value` on every render (a fully controlled field) fought with the user's own
+// typing — confirmed live: after one edit, the box would freeze showing stale
+// text no matter what was typed next. query still tracks what's typed (read from
+// the input event) purely to compute matches; the DOM field itself is only ever
+// written to imperatively, once, when a suggestion is picked.
 function CitySelect({ cities, value, onChange, label }) {
   const selected = cities.find((c) => String(c.id) === String(value));
+  const inputRef = useRef(null);
   const [query, setQuery] = useState(selected?.name || "");
   const [open, setOpen] = useState(false);
   const blurTimer = useRef(null);
@@ -55,6 +57,7 @@ function CitySelect({ cities, value, onChange, label }) {
     clearBlurTimer();
     onChange(String(city.id));
     setQuery(city.name);
+    if (inputRef.current) inputRef.current.value = city.name;
     setOpen(false);
   };
 
@@ -77,9 +80,10 @@ function CitySelect({ cities, value, onChange, label }) {
   return (
     <s-stack direction="block" gap="small-200">
       <s-text-field
+        ref={inputRef}
         label={label}
         placeholder="Type to search InstaWorld cities…"
-        value={query}
+        defaultValue={selected?.name || ""}
         onInput={handleInput}
         onFocus={handleFocus}
         onBlur={handleBlur}
