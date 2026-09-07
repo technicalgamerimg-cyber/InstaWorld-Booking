@@ -387,31 +387,83 @@ function findCityId(cities, cityName) {
 }
 
 function CitySelect({ cities, value, onChange }) {
-  const [filter, setFilter] = useState("");
-  const q = filter.trim().toLowerCase();
   const selected = cities.find((c) => String(c.id) === String(value));
+  const [query, setQuery] = useState(selected?.name || "");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef(null);
+
+  // Keep the input text in sync when the selection changes from outside
+  // (e.g. a fresh row is added to the bulk table after this component mounted).
+  useEffect(() => {
+    const sel = cities.find((c) => String(c.id) === String(value));
+    setQuery(sel?.name || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  useEffect(() => {
+    const onDocMouseDown = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, []);
+
+  const q = query.trim().toLowerCase();
   const matches = q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 50) : [];
-  const options = selected && !matches.some((c) => c.id === selected.id) ? [selected, ...matches] : matches;
+
+  const pick = (city) => {
+    onChange(String(city.id));
+    setQuery(city.name);
+    setOpen(false);
+  };
+
+  const handleInput = (e) => {
+    const next = e.target.value;
+    setQuery(next);
+    setOpen(true);
+    setHighlight(0);
+    if (value) onChange(""); // typing invalidates the previous pick until a new one is made
+  };
+
+  const handleKeyDown = (e) => {
+    if (!open || matches.length === 0) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => Math.min(h + 1, matches.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(matches[highlight]); }
+    else if (e.key === "Escape") { setOpen(false); }
+  };
 
   return (
-    <div>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       <input
         type="text"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
+        value={query}
+        onChange={handleInput}
+        onFocus={() => setOpen(true)}
+        onKeyDown={handleKeyDown}
         placeholder="Type to search InstaWorld cities…"
-        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box", marginBottom: "5px" }}
+        style={{ width: "100%", border: value ? "1px solid #008060" : "1px solid #c9cccf", borderRadius: "6px", padding: "7px 8px", fontSize: "13px", boxSizing: "border-box" }}
       />
-      <select
-        value={value || ""}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 8px", fontSize: "13px", boxSizing: "border-box", background: "#fff", color: value ? "#202223" : "#8c9196" }}
-      >
-        <option value="">Select a city…</option>
-        {options.map((c) => (
-          <option key={c.id} value={c.id}>{c.name}</option>
-        ))}
-      </select>
+      {open && matches.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, background: "#fff", border: "1px solid #c9cccf", borderRadius: "6px", marginTop: "3px", maxHeight: "220px", overflowY: "auto", boxShadow: "0 4px 14px rgba(0,0,0,0.15)" }}>
+          {matches.map((c, i) => (
+            <div
+              key={c.id}
+              onMouseDown={(e) => { e.preventDefault(); pick(c); }}
+              onMouseEnter={() => setHighlight(i)}
+              style={{ padding: "7px 10px", fontSize: "13px", cursor: "pointer", background: i === highlight ? "#f0f4ff" : "#fff" }}
+            >
+              {c.name}
+            </div>
+          ))}
+        </div>
+      )}
+      {open && q && matches.length === 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, background: "#fff", border: "1px solid #c9cccf", borderRadius: "6px", marginTop: "3px", padding: "8px 10px", fontSize: "12px", color: "#6d7175" }}>
+          No matching city
+        </div>
+      )}
     </div>
   );
 }

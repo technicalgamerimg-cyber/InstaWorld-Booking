@@ -19,28 +19,47 @@ function findCityId(cities, cityName) {
 // InstaWorld only recognizes exact names from its own city list — a free-typed
 // city (typo, extra address text, a district it doesn't service) is the #1 cause
 // of booking failures, so this forces a pick from that list instead of free text.
-// 1800+ cities means a plain <s-select> needs a filter to stay usable.
+// A single search box: typing invalidates the current pick and shows matches
+// below to tap; picking one fills the box with that exact name and hides the list.
 function CitySelect({ cities, value, onChange, label }) {
-  const [filter, setFilter] = useState("");
-  const q = filter.trim().toLowerCase();
   const selected = cities.find((c) => String(c.id) === String(value));
-  const matches = q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 50) : [];
-  const options = selected && !matches.some((c) => c.id === selected.id) ? [selected, ...matches] : matches;
+  const [query, setQuery] = useState(selected?.name || "");
+
+  useEffect(() => {
+    const sel = cities.find((c) => String(c.id) === String(value));
+    setQuery(sel?.name || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const q = query.trim().toLowerCase();
+  const matches = q && !value ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 8) : [];
+
+  const pick = (city) => {
+    onChange(String(city.id));
+    setQuery(city.name);
+  };
+
+  const handleInput = (e) => {
+    const next = e.currentTarget.value;
+    setQuery(next);
+    if (value) onChange("");
+  };
 
   return (
     <s-stack direction="block" gap="small-200">
       <s-text-field
         label={label}
-        placeholder="Type to search…"
-        value={filter}
-        onInput={(e) => setFilter(e.currentTarget.value)}
+        placeholder="Type to search InstaWorld cities…"
+        value={query}
+        onInput={handleInput}
       />
-      <s-select value={value || ""} onChange={(e) => onChange(e.currentTarget.value)}>
-        <s-option value="">Select a city…</s-option>
-        {options.map((c) => (
-          <s-option key={c.id} value={String(c.id)}>{c.name}</s-option>
-        ))}
-      </s-select>
+      {matches.length > 0 && (
+        <s-stack direction="block" gap="small-100">
+          {matches.map((c) => (
+            <s-button key={c.id} variant="tertiary" onClick={() => pick(c)}>{c.name}</s-button>
+          ))}
+        </s-stack>
+      )}
     </s-stack>
   );
 }
