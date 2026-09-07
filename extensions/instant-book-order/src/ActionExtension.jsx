@@ -28,24 +28,31 @@ function findCityId(cities, cityName) {
 // list. The list also closes on blur (delayed, so a tap on a match still
 // registers first) — without this it stayed open indefinitely once you moved to
 // another field without picking, pushing everything below it down the page.
+//
+// query is seeded once at mount from value/cities and otherwise fully owned by
+// this component's own handlers — there used to be a useEffect re-deriving query
+// from value on every value change, but it raced against typing: the first
+// keystroke on an already-picked field calls onChange("") to invalidate the old
+// pick, which changed `value`, which re-ran that effect, which reset query back
+// to "" a moment later — wiping out the character just typed.
 function CitySelect({ cities, value, onChange, label }) {
   const selected = cities.find((c) => String(c.id) === String(value));
   const [query, setQuery] = useState(selected?.name || "");
   const [open, setOpen] = useState(false);
   const blurTimer = useRef(null);
 
-  useEffect(() => {
-    const sel = cities.find((c) => String(c.id) === String(value));
-    setQuery(sel?.name || "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
-
   useEffect(() => () => clearTimeout(blurTimer.current), []);
 
   const q = query.trim().toLowerCase();
   const matches = open && q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 8) : [];
 
+  const clearBlurTimer = () => {
+    clearTimeout(blurTimer.current);
+    blurTimer.current = null;
+  };
+
   const pick = (city) => {
+    clearBlurTimer();
     onChange(String(city.id));
     setQuery(city.name);
     setOpen(false);
@@ -56,6 +63,11 @@ function CitySelect({ cities, value, onChange, label }) {
     setQuery(next);
     setOpen(true);
     if (value) onChange("");
+  };
+
+  const handleFocus = () => {
+    clearBlurTimer(); // a quick blur+refocus (e.g. tapping a result) must not let a pending close win
+    setOpen(true);
   };
 
   const handleBlur = () => {
@@ -69,7 +81,7 @@ function CitySelect({ cities, value, onChange, label }) {
         placeholder="Type to search InstaWorld cities…"
         value={query}
         onInput={handleInput}
-        onFocus={() => setOpen(true)}
+        onFocus={handleFocus}
         onBlur={handleBlur}
       />
       {matches.length > 0 && (

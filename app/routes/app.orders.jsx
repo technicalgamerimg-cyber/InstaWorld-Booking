@@ -387,19 +387,19 @@ function findCityId(cities, cityName) {
 }
 
 function CitySelect({ cities, value, onChange }) {
+  // query's initial value is seeded from value/cities at mount — that's the only
+  // sync needed. A useEffect re-deriving query from value on every value change
+  // used to live here, but it raced against typing: the first keystroke on an
+  // already-picked field fires onChange("") to invalidate the old pick, which
+  // changed `value`, which re-ran that effect, which then reset query back to ""
+  // a moment later — wiping out the character just typed. query is fully owned
+  // by this component's own handlers below; nothing external ever writes `value`
+  // without also calling setQuery in the same handler, so no sync effect is needed.
   const selected = cities.find((c) => String(c.id) === String(value));
   const [query, setQuery] = useState(selected?.name || "");
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const wrapRef = useRef(null);
-
-  // Keep the input text in sync when the selection changes from outside
-  // (e.g. a fresh row is added to the bulk table after this component mounted).
-  useEffect(() => {
-    const sel = cities.find((c) => String(c.id) === String(value));
-    setQuery(sel?.name || "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
 
   useEffect(() => {
     const onDocMouseDown = (e) => {
@@ -441,7 +441,7 @@ function CitySelect({ cities, value, onChange }) {
         value={query}
         onChange={handleInput}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onBlur={() => setOpen(false)}
         onKeyDown={handleKeyDown}
         placeholder="Type to search InstaWorld cities…"
         style={{ width: "100%", border: value ? "1px solid #008060" : "1px solid #c9cccf", borderRadius: "6px", padding: "7px 8px", fontSize: "13px", boxSizing: "border-box" }}
@@ -966,6 +966,7 @@ export default function OrdersPage() {
       {/* Custom Booking Modal */}
       {modalOrder && (
         <BookingModal
+          key={modalOrder.id}
           order={modalOrder}
           settings={settings}
           cities={cities}
@@ -977,6 +978,7 @@ export default function OrdersPage() {
       {/* Bulk Booking Modal */}
       {bulkModalOpen && (
         <BulkBookingModal
+          key={[...selected].sort().join(",")}
           orders={orders.filter((o) => selected.has(o.id))}
           settings={settings}
           cities={cities}
