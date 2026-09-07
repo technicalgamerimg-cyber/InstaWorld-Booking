@@ -1,6 +1,6 @@
 import "@shopify/ui-extensions/preact";
 import { render } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 // Must match `application_url` in shopify.app.toml — extensions run on a
 // Shopify-hosted origin and can't read the app's server env, so this is fixed here.
@@ -24,10 +24,15 @@ function findCityId(cities, cityName) {
 // city (typo, extra address text, a district it doesn't service) is the #1 cause
 // of booking failures, so this forces a pick from that list instead of free text.
 // A single search box: typing invalidates the current pick and shows matches
-// below to tap; picking one fills the box with that exact name and hides the list.
+// below to tap; picking one fills the box with that exact name and closes the
+// list. The list also closes on blur (delayed, so a tap on a match still
+// registers first) — without this it stayed open indefinitely once you moved to
+// another field without picking, pushing everything below it down the page.
 function CitySelect({ cities, value, onChange, label }) {
   const selected = cities.find((c) => String(c.id) === String(value));
   const [query, setQuery] = useState(selected?.name || "");
+  const [open, setOpen] = useState(false);
+  const blurTimer = useRef(null);
 
   useEffect(() => {
     const sel = cities.find((c) => String(c.id) === String(value));
@@ -35,18 +40,26 @@ function CitySelect({ cities, value, onChange, label }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
+  useEffect(() => () => clearTimeout(blurTimer.current), []);
+
   const q = query.trim().toLowerCase();
-  const matches = q && !value ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 8) : [];
+  const matches = open && q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 8) : [];
 
   const pick = (city) => {
     onChange(String(city.id));
     setQuery(city.name);
+    setOpen(false);
   };
 
   const handleInput = (e) => {
     const next = e.currentTarget.value;
     setQuery(next);
+    setOpen(true);
     if (value) onChange("");
+  };
+
+  const handleBlur = () => {
+    blurTimer.current = setTimeout(() => setOpen(false), 200);
   };
 
   return (
@@ -56,6 +69,8 @@ function CitySelect({ cities, value, onChange, label }) {
         placeholder="Type to search InstaWorld cities…"
         value={query}
         onInput={handleInput}
+        onFocus={() => setOpen(true)}
+        onBlur={handleBlur}
       />
       {matches.length > 0 && (
         <s-stack direction="block" gap="small-100">

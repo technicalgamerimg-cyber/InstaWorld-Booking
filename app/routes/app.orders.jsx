@@ -441,6 +441,7 @@ function CitySelect({ cities, value, onChange }) {
         value={query}
         onChange={handleInput}
         onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={handleKeyDown}
         placeholder="Type to search InstaWorld cities…"
         style={{ width: "100%", border: value ? "1px solid #008060" : "1px solid #c9cccf", borderRadius: "6px", padding: "7px 8px", fontSize: "13px", boxSizing: "border-box" }}
