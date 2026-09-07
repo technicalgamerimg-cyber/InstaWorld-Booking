@@ -91,6 +91,9 @@ function CitySelect({ cities, value, onChange, label }) {
           ))}
         </s-stack>
       )}
+      {open && q && matches.length === 0 && (
+        <s-text color="subdued">No matching city — keep typing or try a different spelling.</s-text>
+      )}
     </s-stack>
   );
 }
