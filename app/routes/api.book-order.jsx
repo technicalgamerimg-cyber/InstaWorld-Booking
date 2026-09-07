@@ -2,6 +2,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureOrderInDb, parseOrderGid } from "../utils/orderSync.server";
 import { bookOrderShipment, defaultCodValue } from "../utils/booking.server";
+import { getCities } from "../utils/cities.server";
 
 // Backend for the "Book with Instant Bulk Booking" admin action extension
 // (extensions/instant-book-order) — the extension only renders UI, all Shopify/DB/
@@ -34,9 +35,10 @@ export const loader = async ({ request }) => {
   }
 
   try {
-    const [order, settings] = await Promise.all([
+    const [order, settings, cities] = await Promise.all([
       ensureOrderInDb({ admin, shop: session.shop, shopifyId }),
       db.settings.findUnique({ where: { shop: session.shop } }),
+      getCities(),
     ]);
 
     if (!order) {
@@ -47,6 +49,7 @@ export const loader = async ({ request }) => {
       ok: true,
       order: orderSummary(order),
       alreadyBooked: order.bookingStatus === "booked" || Boolean(order.trackingNumber),
+      cities,
       settings: {
         hasApiKey: Boolean(settings?.instaworldApiKey),
         defaultWeight: settings?.defaultWeight ?? 1,
@@ -115,6 +118,7 @@ export const action = async ({ request }) => {
       instructions,
       addressOverride: body.address,
       phoneOverride: body.phone,
+      cityOverride: body.city,
     });
 
     return cors(Response.json({ ok: true, trackingNumber: result.trackingNumber }));

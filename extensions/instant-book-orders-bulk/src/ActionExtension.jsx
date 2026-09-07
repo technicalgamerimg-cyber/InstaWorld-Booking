@@ -10,6 +10,41 @@ export default async () => {
   render(<Extension />, document.body);
 };
 
+function findCityId(cities, cityName) {
+  if (!cityName) return "";
+  const match = cities.find((c) => c.name.toLowerCase() === cityName.trim().toLowerCase());
+  return match ? String(match.id) : "";
+}
+
+// InstaWorld only recognizes exact names from its own city list — a free-typed
+// city (typo, extra address text, a district it doesn't service) is the #1 cause
+// of booking failures, so this forces a pick from that list instead of free text.
+// 1800+ cities means a plain <s-select> needs a filter to stay usable.
+function CitySelect({ cities, value, onChange, label }) {
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const selected = cities.find((c) => String(c.id) === String(value));
+  const matches = q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 50) : [];
+  const options = selected && !matches.some((c) => c.id === selected.id) ? [selected, ...matches] : matches;
+
+  return (
+    <s-stack direction="block" gap="small-200">
+      <s-text-field
+        label={label}
+        placeholder="Type to search…"
+        value={filter}
+        onInput={(e) => setFilter(e.currentTarget.value)}
+      />
+      <s-select value={value || ""} onChange={(e) => onChange(e.currentTarget.value)}>
+        <s-option value="">Select a city…</s-option>
+        {options.map((c) => (
+          <s-option key={c.id} value={String(c.id)}>{c.name}</s-option>
+        ))}
+      </s-select>
+    </s-stack>
+  );
+}
+
 function Extension() {
   const { i18n, close, data, auth } = shopify;
   const orderGids = data.selected.map((r) => r.id);
@@ -20,7 +55,8 @@ function Extension() {
   const [weight, setWeight] = useState("1000");
   const [cod, setCod] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [rows, setRows] = useState({}); // { [orderId]: { address, phone } }
+  const [rows, setRows] = useState({}); // { [orderId]: { address, phone, cityId } }
+  const [cities, setCities] = useState([]);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
 
@@ -47,8 +83,13 @@ function Extension() {
         setHasApiKey(json.settings.hasApiKey);
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
         setInstructions(json.settings.defaultInstructions || "");
+        setCities(json.cities || []);
         setRows(Object.fromEntries(
-          json.orders.map((o) => [o.id, { address: o.address || "", phone: o.phone || "" }])
+          json.orders.map((o) => [o.id, {
+            address: o.address || "",
+            phone: o.phone || "",
+            cityId: findCityId(json.cities || [], o.city),
+          }])
         ));
         setPhase("ready");
       } catch (e) {
@@ -61,9 +102,12 @@ function Extension() {
 
   const bookable = orders.filter((o) => !o.alreadyBooked);
   const alreadyBookedCount = orders.length - bookable.length;
+  const missingCity = bookable.filter((o) => !rows[o.id]?.cityId).length;
 
   const setRow = (id, key) => (e) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], [key]: e.currentTarget.value } }));
+  const setRowCity = (id) => (cityId) =>
+    setRows((r) => ({ ...r, [id]: { ...r[id], cityId } }));
 
   const handleConfirm = async () => {
     setError(null);
@@ -73,6 +117,7 @@ function Extension() {
         orderId: o.id,
         address: rows[o.id]?.address,
         phone: rows[o.id]?.phone,
+        city: cities.find((c) => String(c.id) === String(rows[o.id]?.cityId))?.name || "",
       }));
       const res = await authedFetch("/api/book-orders-bulk", {
         method: "POST",
@@ -197,6 +242,12 @@ function Extension() {
                     onInput={setRow(o.id, "phone")}
                   />
                 </s-stack>
+                <CitySelect
+                  cities={cities}
+                  value={rows[o.id]?.cityId}
+                  onChange={setRowCity(o.id)}
+                  label={i18n.translate("cityLabel")}
+                />
               </s-stack>
             </s-box>
           ))}
@@ -207,10 +258,14 @@ function Extension() {
         slot="primary-action"
         variant="primary"
         loading={submitting}
-        disabled={submitting || !hasApiKey || bookable.length === 0}
+        disabled={submitting || !hasApiKey || bookable.length === 0 || missingCity > 0}
         onClick={handleConfirm}
       >
-        {submitting ? i18n.translate("booking") : i18n.translate("confirm", { count: bookable.length })}
+        {submitting
+          ? i18n.translate("booking")
+          : missingCity > 0
+            ? i18n.translate("confirmMissingCity", { count: missingCity })
+            : i18n.translate("confirm", { count: bookable.length })}
       </s-button>
       <s-button slot="secondary-actions" disabled={submitting} onClick={() => close()}>
         {i18n.translate("cancel")}

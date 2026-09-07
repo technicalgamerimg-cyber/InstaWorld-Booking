@@ -14,6 +14,44 @@ function defaultCod(order) {
   return order.financialStatus === "paid" ? "0" : (order.totalPrice || "0");
 }
 
+function findCityId(cities, cityName) {
+  if (!cityName) return "";
+  const match = cities.find((c) => c.name.toLowerCase() === cityName.trim().toLowerCase());
+  return match ? String(match.id) : "";
+}
+
+// InstaWorld only recognizes exact names from its own city list — a free-typed
+// city (typo, extra address text, a district it doesn't service) is the #1 cause
+// of booking failures, so this forces a pick from that list instead of free text.
+// 1800+ cities means a plain <s-select> needs a filter to stay usable.
+function CitySelect({ cities, value, onChange, label }) {
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const selected = cities.find((c) => String(c.id) === String(value));
+  const matches = q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 50) : [];
+  const options = selected && !matches.some((c) => c.id === selected.id) ? [selected, ...matches] : matches;
+
+  return (
+    <s-stack direction="block" gap="small-200">
+      <s-text-field
+        label={label}
+        placeholder="Type to search…"
+        value={filter}
+        onInput={(e) => setFilter(e.currentTarget.value)}
+      />
+      <s-select
+        value={value || ""}
+        onChange={(e) => onChange(e.currentTarget.value)}
+      >
+        <s-option value="">Select a city…</s-option>
+        {options.map((c) => (
+          <s-option key={c.id} value={String(c.id)}>{c.name}</s-option>
+        ))}
+      </s-select>
+    </s-stack>
+  );
+}
+
 function Extension() {
   const { i18n, close, data, auth } = shopify;
   const orderGid = data.selected[0].id;
@@ -27,6 +65,8 @@ function Extension() {
   const [instructions, setInstructions] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
+  const [cityId, setCityId] = useState("");
+  const [cities, setCities] = useState([]);
   const [error, setError] = useState(null);
   const [trackingNumber, setTrackingNumber] = useState(null);
 
@@ -57,6 +97,8 @@ function Extension() {
         setInstructions(json.settings.defaultInstructions || "");
         setAddress(json.order.address || "");
         setPhone(json.order.phone || "");
+        setCities(json.cities || []);
+        setCityId(findCityId(json.cities || [], json.order.city));
         setPhase("ready");
       } catch (e) {
         console.error("[instant-book-order] load failed:", e.message);
@@ -73,7 +115,15 @@ function Extension() {
       const res = await authedFetch("/api/book-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: orderGid, weight, cod, instructions, address, phone }),
+        body: JSON.stringify({
+          orderId: orderGid,
+          weight,
+          cod,
+          instructions,
+          address,
+          phone,
+          city: cities.find((c) => String(c.id) === String(cityId))?.name || "",
+        }),
       });
       const json = await res.json();
       if (!json.ok) {
@@ -162,6 +212,7 @@ function Extension() {
           value={phone}
           onInput={(e) => setPhone(e.currentTarget.value)}
         />
+        <CitySelect cities={cities} value={cityId} onChange={setCityId} label={i18n.translate("cityLabel")} />
 
         <s-number-field
           label={i18n.translate("weightLabel")}
@@ -187,7 +238,7 @@ function Extension() {
         slot="primary-action"
         variant="primary"
         loading={submitting}
-        disabled={submitting || !hasApiKey}
+        disabled={submitting || !hasApiKey || !cityId}
         onClick={handleConfirm}
       >
         {submitting ? i18n.translate("booking") : i18n.translate("confirm")}

@@ -3,12 +3,16 @@ import { useLoaderData, useFetcher, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { syncCities } from "../utils/cities.server";
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
-  const settings = await db.settings.findUnique({ where: { shop: session.shop } });
+  const [settings, cityCount] = await Promise.all([
+    db.settings.findUnique({ where: { shop: session.shop } }),
+    db.city.count(),
+  ]);
   return {
     instaworldApiKey: settings?.instaworldApiKey || "",
     defaultWeight: settings?.defaultWeight ?? 1,
@@ -16,6 +20,7 @@ export const loader = async ({ request }) => {
     shipperName: settings?.shipperName || "",
     shipperPhone: settings?.shipperPhone || "",
     shipperAddress: settings?.shipperAddress || "",
+    cityCount,
   };
 };
 
@@ -24,6 +29,16 @@ export const loader = async ({ request }) => {
 export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
+
+  if (form.get("intent") === "syncCities") {
+    try {
+      const { synced } = await syncCities();
+      return { ok: true, citiesSynced: synced };
+    } catch (err) {
+      console.error("[settings:syncCities] failed:", err.message);
+      return { ok: false, error: "Could not sync cities from InstaWorld. Please try again." };
+    }
+  }
 
   const settingsData = {
     instaworldApiKey: form.get("instaworldApiKey") || null,
@@ -166,6 +181,7 @@ const S = {
 export default function SettingsPage() {
   const data = useLoaderData();
   const fetcher = useFetcher();
+  const citySyncFetcher = useFetcher();
   const [saved, setSaved] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const prevState = useRef("idle");
@@ -216,6 +232,35 @@ export default function SettingsPage() {
             </div>
             <p style={S.hint}>
               Used for authentication on every API call. Determines your pickup location and courier assignment.
+            </p>
+          </div>
+
+          {/* InstaWorld cities */}
+          <div style={S.field}>
+            <label style={S.label}>InstaWorld serviceable cities</label>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <button
+                type="button"
+                disabled={citySyncFetcher.state !== "idle"}
+                onClick={() => citySyncFetcher.submit({ intent: "syncCities" }, { method: "POST" })}
+                style={citySyncFetcher.state !== "idle" ? S.btnSaveDisabled : { ...S.btnSave, background: "#fff", color: "#202223", border: "1px solid #c9cccf" }}
+              >
+                {citySyncFetcher.state !== "idle" ? "Syncing…" : "Sync cities from InstaWorld"}
+              </button>
+              <span style={{ color: "#6d7175", fontSize: "13px" }}>
+                {data.cityCount > 0 ? `${data.cityCount} cities loaded` : "Not synced yet"}
+              </span>
+            </div>
+            {citySyncFetcher.data?.ok && (
+              <p style={{ ...S.hint, color: "#008060" }}>✓ Synced {citySyncFetcher.data.citiesSynced} cities</p>
+            )}
+            {citySyncFetcher.data?.ok === false && (
+              <p style={{ ...S.hint, color: "#d82c0d" }}>⚠ {citySyncFetcher.data.error}</p>
+            )}
+            <p style={S.hint}>
+              Booking screens let merchants pick a city from this list instead of typing one — the #1 cause of
+              InstaWorld rejecting a booking is a city name that doesn't exactly match one it services. Re-sync
+              if InstaWorld adds coverage you don't see here yet.
             </p>
           </div>
 

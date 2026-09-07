@@ -14,7 +14,7 @@ export const loader = async ({ request }) => {
 
   // Orders page is now a pure DB read — Shopify sync happens via webhooks (api.webhooks.jsx)
   try {
-    const [orders, shopSettings] = await Promise.all([
+    const [orders, shopSettings, cities] = await Promise.all([
       db.order.findMany({
         where: { shop: session.shop },
         orderBy: { createdAt: "desc" },
@@ -36,6 +36,7 @@ export const loader = async ({ request }) => {
         },
       }),
       db.settings.findUnique({ where: { shop: session.shop } }),
+      db.city.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     ]);
 
     return {
@@ -48,12 +49,14 @@ export const loader = async ({ request }) => {
         defaultWeight: shopSettings?.defaultWeight ?? 1,
         defaultInstructions: shopSettings?.defaultInstructions ?? "",
       },
+      cities,
     };
   } catch (err) {
     console.error("[loader:orders] DB error:", err.message);
     return {
       orders: [],
       settings: { defaultWeight: 1, defaultInstructions: "" },
+      cities: [],
       error: "Could not load orders.",
     };
   }
@@ -212,6 +215,7 @@ export const action = async ({ request }) => {
         instructions: instructions ?? shopSettings.defaultInstructions ?? "",
         addressOverride: override.address,
         phoneOverride: override.phone,
+        cityOverride: override.city,
       });
     };
 
@@ -371,9 +375,50 @@ function StatusBadge({ status, trackingNumber }) {
   );
 }
 
+// ─── City select ─────────────────────────────────────────────────────────────
+
+// InstaWorld only recognizes exact names from its own city list — a free-typed
+// city (typo, extra address text, a district it doesn't service) is the #1 cause
+// of booking failures. This forces a pick from that list instead of free text.
+function findCityId(cities, cityName) {
+  if (!cityName) return "";
+  const match = cities.find((c) => c.name.toLowerCase() === cityName.trim().toLowerCase());
+  return match ? String(match.id) : "";
+}
+
+function CitySelect({ cities, value, onChange }) {
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const selected = cities.find((c) => String(c.id) === String(value));
+  const matches = q ? cities.filter((c) => c.name.toLowerCase().includes(q)).slice(0, 50) : [];
+  const options = selected && !matches.some((c) => c.id === selected.id) ? [selected, ...matches] : matches;
+
+  return (
+    <div>
+      <input
+        type="text"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="Type to search InstaWorld cities…"
+        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box", marginBottom: "5px" }}
+      />
+      <select
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 8px", fontSize: "13px", boxSizing: "border-box", background: "#fff", color: value ? "#202223" : "#8c9196" }}
+      >
+        <option value="">Select a city…</option>
+        {options.map((c) => (
+          <option key={c.id} value={c.id}>{c.name}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 // ─── Modal ───────────────────────────────────────────────────────────────────
 
-function BookingModal({ order, settings, onClose, onConfirm }) {
+function BookingModal({ order, settings, cities, onClose, onConfirm }) {
   const cod = codValue(order);
   const defaultWeightGrams = String(Math.round((settings?.defaultWeight || 1) * 1000));
   const [form, setForm] = useState({
@@ -383,6 +428,7 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
     instructions: settings?.defaultInstructions || "",
     address: order.address || "",
     phone: order.phone || "",
+    cityId: findCityId(cities, order.city),
   });
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -443,6 +489,12 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
               />
             </div>
           </div>
+          <div style={{ marginBottom: "14px" }}>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>
+              InstaWorld city <span style={{ color: "#d82c0d" }}>*</span>
+            </label>
+            <CitySelect cities={cities} value={form.cityId} onChange={(id) => setForm((f) => ({ ...f, cityId: id }))} />
+          </div>
           <div>
             <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Special instructions</label>
             <textarea
@@ -458,7 +510,14 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
           <button onClick={onClose} style={{ padding: "8px 20px", background: "#fff", border: "1px solid #c9cccf", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}>
             Cancel
           </button>
-          <button onClick={() => onConfirm(form)} style={{ padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}>
+          <button
+            onClick={() => onConfirm(form)}
+            disabled={!form.cityId}
+            title={!form.cityId ? "Select an InstaWorld city first" : undefined}
+            style={!form.cityId
+              ? { padding: "8px 20px", background: "#c9cccf", color: "#fff", border: "none", borderRadius: "6px", cursor: "not-allowed", fontWeight: "600" }
+              : { padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}
+          >
             Confirm booking
           </button>
         </div>
@@ -467,7 +526,7 @@ function BookingModal({ order, settings, onClose, onConfirm }) {
   );
 }
 
-function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
+function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
   const defaultWeightGrams = String(Math.round((settings?.defaultWeight || 1) * 1000));
   const [shared, setShared] = useState({
     weight: defaultWeightGrams,
@@ -475,12 +534,20 @@ function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
     instructions: settings?.defaultInstructions || "",
   });
   const [rows, setRows] = useState(() =>
-    Object.fromEntries(orders.map((o) => [o.id, { address: o.address || "", phone: o.phone || "" }]))
+    Object.fromEntries(orders.map((o) => [o.id, {
+      address: o.address || "",
+      phone: o.phone || "",
+      cityId: findCityId(cities, o.city),
+    }]))
   );
 
   const setShare = (k) => (e) => setShared((f) => ({ ...f, [k]: e.target.value }));
   const setRow = (id, k) => (e) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], [k]: e.target.value } }));
+  const setRowCity = (id) => (cityId) =>
+    setRows((r) => ({ ...r, [id]: { ...r[id], cityId } }));
+
+  const missingCity = orders.filter((o) => !rows[o.id]?.cityId).length;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -526,13 +593,13 @@ function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
           </div>
 
           <div style={{ fontSize: "12px", fontWeight: "600", color: "#6d7175", marginBottom: "6px" }}>
-            Review and correct each order's delivery address / phone before booking
+            Review and correct each order's delivery address / phone / city before booking
           </div>
           <div style={{ border: "1px solid #e1e3e5", borderRadius: "6px", overflow: "hidden" }}>
             <table style={S.table}>
               <thead>
                 <tr>
-                  {["Order", "Address", "Phone"].map((h) => (
+                  {["Order", "Address", "Phone", "InstaWorld city *"].map((h) => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -562,6 +629,9 @@ function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
                         style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
                       />
                     </td>
+                    <td style={{ ...S.td, minWidth: "170px" }}>
+                      <CitySelect cities={cities} value={rows[o.id]?.cityId} onChange={setRowCity(o.id)} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -569,11 +639,23 @@ function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
           </div>
         </div>
         {/* Footer */}
-        <div style={{ padding: "12px 20px 18px", display: "flex", justifyContent: "flex-end", gap: "10px", borderTop: "1px solid #e1e3e5" }}>
+        <div style={{ padding: "12px 20px 18px", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "10px", borderTop: "1px solid #e1e3e5" }}>
+          {missingCity > 0 && (
+            <span style={{ color: "#d82c0d", fontSize: "12px", marginRight: "auto" }}>
+              {missingCity} order{missingCity !== 1 ? "s" : ""} still need{missingCity === 1 ? "s" : ""} a city
+            </span>
+          )}
           <button onClick={onClose} style={{ padding: "8px 20px", background: "#fff", border: "1px solid #c9cccf", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}>
             Cancel
           </button>
-          <button onClick={() => onConfirm(shared, rows)} style={{ padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}>
+          <button
+            onClick={() => onConfirm(shared, rows)}
+            disabled={missingCity > 0}
+            title={missingCity > 0 ? "Select an InstaWorld city for every order first" : undefined}
+            style={missingCity > 0
+              ? { padding: "8px 20px", background: "#c9cccf", color: "#fff", border: "none", borderRadius: "6px", cursor: "not-allowed", fontWeight: "600" }
+              : { padding: "8px 20px", background: "#202223", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "600" }}
+          >
             Confirm booking ({orders.length})
           </button>
         </div>
@@ -585,7 +667,7 @@ function BulkBookingModal({ orders, settings, onClose, onConfirm }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OrdersPage() {
-  const { orders, settings } = useLoaderData();
+  const { orders, settings, cities } = useLoaderData();
   const fetcher = useFetcher();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(new Set());
@@ -630,6 +712,8 @@ export default function OrdersPage() {
     });
   };
 
+  const cityName = (id) => cities.find((c) => String(c.id) === String(id))?.name || "";
+
   const handleConfirmModal = (form) => {
     setSubmittingId(modalOrder.id);
     fetcher.submit(
@@ -640,7 +724,7 @@ export default function OrdersPage() {
         pieces: form.pieces,
         cod: form.cod,
         instructions: form.instructions,
-        overrides: JSON.stringify({ [modalOrder.id]: { address: form.address, phone: form.phone } }),
+        overrides: JSON.stringify({ [modalOrder.id]: { address: form.address, phone: form.phone, city: cityName(form.cityId) } }),
       },
       { method: "POST" }
     );
@@ -649,6 +733,9 @@ export default function OrdersPage() {
 
   const handleConfirmBulkModal = (shared, rows) => {
     const ids = [...selected];
+    const overrides = Object.fromEntries(
+      Object.entries(rows).map(([id, r]) => [id, { address: r.address, phone: r.phone, city: cityName(r.cityId) }])
+    );
     fetcher.submit(
       {
         intent: "book",
@@ -656,7 +743,7 @@ export default function OrdersPage() {
         weight: shared.weight,
         cod: shared.cod,
         instructions: shared.instructions,
-        overrides: JSON.stringify(rows),
+        overrides: JSON.stringify(overrides),
       },
       { method: "POST" }
     );
@@ -828,6 +915,7 @@ export default function OrdersPage() {
         <BookingModal
           order={modalOrder}
           settings={settings}
+          cities={cities}
           onClose={() => setModalOrder(null)}
           onConfirm={handleConfirmModal}
         />
@@ -838,6 +926,7 @@ export default function OrdersPage() {
         <BulkBookingModal
           orders={orders.filter((o) => selected.has(o.id))}
           settings={settings}
+          cities={cities}
           onClose={() => setBulkModalOpen(false)}
           onConfirm={handleConfirmBulkModal}
         />

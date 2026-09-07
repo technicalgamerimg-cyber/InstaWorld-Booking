@@ -6,6 +6,7 @@
   "notConfigured": "InstaWorld API key not configured. Go to the app's Settings page first.",
   "addressLabel": "Delivery address",
   "phoneLabel": "Phone number",
+  "cityLabel": "InstaWorld city *",
   "weightLabel": "Weight (grams)",
   "codLabel": "COD amount",
   "instructionsLabel": "Special instructions",

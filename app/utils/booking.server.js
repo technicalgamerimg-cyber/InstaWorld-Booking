@@ -4,12 +4,16 @@ import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server";
 
 // Books a single order with InstaWorld and creates the matching Shopify fulfillment.
 // Shared by the Orders page bulk/single "Book" action and the order-details/order-index
-// admin action extensions. addressOverride/phoneOverride let the merchant correct the
-// consignee address or phone right before booking without touching the Shopify order or
-// our own Order record — they're a one-time substitution for this shipment's payload only.
+// admin action extensions. addressOverride/phoneOverride/cityOverride let the merchant
+// correct the consignee details right before booking without touching the Shopify order
+// or our own Order record — a one-time substitution for this shipment's payload only.
+// cityOverride should be an exact name from the City table (InstaWorld's own list) —
+// the whole point is to stop sending whatever free-text city the Shopify order has,
+// since a typo or a non-serviceable city there is the #1 cause of booking failures.
+// Falls back to the order's own city only when no override was given.
 // Throws on hard failure (e.g. InstaWorld rejected the shipment); Shopify fulfillment
 // errors are recorded on the order but do not throw, since InstaWorld is the source of truth.
-export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride }) {
+export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride, cityOverride }) {
   const nameParts = (order.customerName || "Customer").split(" ");
 
   const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
@@ -25,6 +29,7 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
 
   const address = (addressOverride || "").trim() || order.address || order.city || "";
   const phone = (phoneOverride || "").trim() || order.phone || "";
+  const city = (cityOverride || "").trim() || order.city || "";
 
   const payload = {
     api_key: apiKey,
@@ -34,7 +39,7 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
     consignee_email: order.email || "",
     consignee_phone: phone,
     consignee_address: address,
-    consignee_city: order.city || "",
+    consignee_city: city,
     amount: codAmount,
     financial_status: order.financialStatus === "paid" ? "paid" : "cod",
     remarks: instructions || "",

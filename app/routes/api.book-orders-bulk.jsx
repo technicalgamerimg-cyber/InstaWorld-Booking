@@ -3,6 +3,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureOrderInDb, parseOrderGid } from "../utils/orderSync.server";
 import { bookOrderShipment, defaultCodValue } from "../utils/booking.server";
+import { getCities } from "../utils/cities.server";
 
 // Backend for the "Book with Instant Bulk Booking" bulk-selection admin action
 // extension (extensions/instant-book-orders-bulk) on the Orders index page —
@@ -37,14 +38,16 @@ export const loader = async ({ request }) => {
 
   try {
     const limit = pLimit(5);
-    const [orders, settings] = await Promise.all([
+    const [orders, settings, cities] = await Promise.all([
       Promise.all(shopifyIds.map((id) => limit(() => ensureOrderInDb({ admin, shop: session.shop, shopifyId: id })))),
       db.settings.findUnique({ where: { shop: session.shop } }),
+      getCities(),
     ]);
 
     return cors(Response.json({
       ok: true,
       orders: orders.filter(Boolean).map(orderSummary),
+      cities,
       settings: {
         hasApiKey: Boolean(settings?.instaworldApiKey),
         defaultWeight: settings?.defaultWeight ?? 1,
@@ -67,12 +70,12 @@ export const action = async ({ request }) => {
     return cors(Response.json({ ok: false, error: "Invalid request body" }, { status: 400 }));
   }
 
-  // Each item carries its own address/phone correction — a one-time override for
-  // this shipment only, same as the single-order admin action. Deduped by shopifyId.
+  // Each item carries its own address/phone/city correction — a one-time override
+  // for this shipment only, same as the single-order admin action. Deduped by shopifyId.
   const itemsById = new Map();
   for (const item of Array.isArray(body.items) ? body.items : []) {
     const shopifyId = parseOrderGid(item?.orderId);
-    if (shopifyId) itemsById.set(shopifyId.toString(), { shopifyId, address: item.address, phone: item.phone });
+    if (shopifyId) itemsById.set(shopifyId.toString(), { shopifyId, address: item.address, phone: item.phone, city: item.city });
   }
   const items = [...itemsById.values()];
   if (items.length === 0) {
@@ -97,7 +100,7 @@ export const action = async ({ request }) => {
 
   const instructions = body.instructions || settings.defaultInstructions || "";
 
-  const bookOne = async ({ shopifyId, address, phone }) => {
+  const bookOne = async ({ shopifyId, address, phone, city }) => {
     const order = await ensureOrderInDb({ admin, shop: session.shop, shopifyId });
     if (!order || order.bookingStatus === "booked" || order.trackingNumber) {
       return { skipped: true };
@@ -114,6 +117,7 @@ export const action = async ({ request }) => {
       instructions,
       addressOverride: address,
       phoneOverride: phone,
+      cityOverride: city,
     });
   };
 

@@ -71,6 +71,18 @@ model Settings {
   updatedAt           DateTime @updatedAt
 }
 
+// InstaWorld's own serviceable-city list (shared across all shops — InstaWorld's
+// coverage isn't shop-specific). id is InstaWorld's own city id from
+// https://one-be.instaworld.pk/logistics/cities, kept as-is so re-syncs are a
+// straightforward upsert rather than a remap.
+model City {
+  id        Int      @id
+  name      String
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+}
+
 model Loadsheet {
   id          Int      @id @default(autoincrement())
   shop        String

@@ -6,6 +6,7 @@
   "notConfigured": "Clé API InstaWorld non configurée. Rendez-vous d'abord sur la page Paramètres de l'application.",
   "addressLabel": "Adresse de livraison",
   "phoneLabel": "Numéro de téléphone",
+  "cityLabel": "Ville InstaWorld *",
   "weightLabel": "Poids (grammes)",
   "codLabel": "Montant COD",
   "instructionsLabel": "Instructions spéciales",
