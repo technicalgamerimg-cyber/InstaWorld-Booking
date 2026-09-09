@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useLoaderData, useFetcher, useRouteError } from "react-router";
+import { useLoaderData, useFetcher, useNavigate, useSearchParams, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -12,14 +12,50 @@ import { computeOutstandingAmount } from "../utils/orderSync.server";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
+  const url = new URL(request.url);
 
-  // Orders page is now a pure DB read — Shopify sync happens via webhooks (api.webhooks.jsx)
+  const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const limitParam = parseInt(url.searchParams.get("limit") || "50", 10);
+  const pageSize = [20, 50, 100, 200].includes(limitParam) ? limitParam : 50;
+  const skip = (page - 1) * pageSize;
+
+  const status = url.searchParams.get("status") || "all";
+  const search = (url.searchParams.get("search") || "").trim();
+
+  const andConditions = [{ shop: session.shop }];
+
+  if (status === "unbooked") {
+    andConditions.push({
+      OR: [
+        { bookingStatus: { not: "booked" } },
+        { bookingStatus: null },
+      ],
+    });
+  } else if (status === "booked") {
+    andConditions.push({ bookingStatus: "booked" });
+  }
+
+  if (search) {
+    andConditions.push({
+      OR: [
+        { name: { contains: search, mode: "insensitive" } },
+        { customerName: { contains: search, mode: "insensitive" } },
+        { phone: { contains: search, mode: "insensitive" } },
+        { city: { contains: search, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  const where = andConditions.length === 1 ? andConditions[0] : { AND: andConditions };
+
+  // Orders page reads from local DB with pagination and filtering — Shopify sync happens via webhooks / manual sync
   try {
-    const [orders, shopSettings, cities] = await Promise.all([
+    const [orders, total, counts, shopSettings, cities] = await Promise.all([
       db.order.findMany({
-        where: { shop: session.shop },
+        where,
         orderBy: { createdAt: "desc" },
-        take: 50,
+        take: pageSize,
+        skip,
         select: {
           id: true,
           shopifyId: true,
@@ -36,9 +72,22 @@ export const loader = async ({ request }) => {
           createdAt: true,
         },
       }),
+      db.order.count({ where }),
+      Promise.all([
+        db.order.count({ where: { shop: session.shop } }),
+        db.order.count({
+          where: {
+            shop: session.shop,
+            OR: [{ bookingStatus: { not: "booked" } }, { bookingStatus: null }],
+          },
+        }),
+        db.order.count({ where: { shop: session.shop, bookingStatus: "booked" } }),
+      ]),
       db.settings.findUnique({ where: { shop: session.shop } }),
       db.city.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
     return {
       orders: orders.map((o) => ({
@@ -46,6 +95,21 @@ export const loader = async ({ request }) => {
         shopifyId: o.shopifyId.toString(),
         createdAt: o.createdAt.toISOString(),
       })),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+      counts: {
+        all: counts[0],
+        unbooked: counts[1],
+        booked: counts[2],
+      },
+      filters: {
+        status,
+        search,
+      },
       settings: {
         defaultWeight: shopSettings?.defaultWeight ?? 1,
         defaultInstructions: shopSettings?.defaultInstructions ?? "",
@@ -56,6 +120,9 @@ export const loader = async ({ request }) => {
     console.error("[loader:orders] DB error:", err.message);
     return {
       orders: [],
+      pagination: { page: 1, pageSize: 50, total: 0, totalPages: 1 },
+      counts: { all: 0, unbooked: 0, booked: 0 },
+      filters: { status: "all", search: "" },
       settings: { defaultWeight: 1, defaultInstructions: "" },
       cities: [],
       error: "Could not load orders.",
@@ -346,6 +413,99 @@ const S = {
     borderBottom: "1px solid #ffc9c9",
     fontSize: "13px",
   },
+  tabsWrap: {
+    display: "flex",
+    borderBottom: "1px solid #e1e3e5",
+    background: "#fafbfc",
+    padding: "0 12px",
+    gap: "4px",
+    overflowX: "auto",
+  },
+  tabBtn: {
+    padding: "10px 14px",
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: "500",
+    color: "#6d7175",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    borderBottom: "2px solid transparent",
+    marginBottom: "-1px",
+    whiteSpace: "nowrap",
+  },
+  tabBtnActive: {
+    padding: "10px 14px",
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: "600",
+    color: "#202223",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    borderBottom: "2px solid #202223",
+    marginBottom: "-1px",
+    whiteSpace: "nowrap",
+  },
+  tabBadge: {
+    fontSize: "11px",
+    padding: "1px 6px",
+    borderRadius: "10px",
+    background: "#e4e5e7",
+    color: "#4a4d50",
+    fontWeight: "500",
+  },
+  tabBadgeActive: {
+    fontSize: "11px",
+    padding: "1px 6px",
+    borderRadius: "10px",
+    background: "#202223",
+    color: "#fff",
+    fontWeight: "500",
+  },
+  paginationWrap: {
+    padding: "12px 16px",
+    borderTop: "1px solid #e1e3e5",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: "12px",
+    background: "#fff",
+  },
+  btnPagination: {
+    padding: "6px 14px",
+    background: "#fff",
+    border: "1px solid #c9cccf",
+    borderRadius: "6px",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: "500",
+    color: "#202223",
+  },
+  btnPaginationDisabled: {
+    padding: "6px 14px",
+    background: "#f6f6f7",
+    border: "1px solid #e1e3e5",
+    borderRadius: "6px",
+    cursor: "not-allowed",
+    fontSize: "13px",
+    color: "#8c9196",
+  },
+  pageSelect: {
+    border: "1px solid #c9cccf",
+    borderRadius: "6px",
+    padding: "5px 8px",
+    fontSize: "13px",
+    color: "#202223",
+    background: "#fff",
+    outline: "none",
+    cursor: "pointer",
+  },
 };
 
 function PaidBadge() {
@@ -602,6 +762,7 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
       cityId: findCityId(cities, o.city),
     }]))
   );
+  const [showOnlyIncomplete, setShowOnlyIncomplete] = useState(false);
 
   const setShare = (k) => (e) => setShared((f) => ({ ...f, [k]: e.target.value }));
   const setRow = (id, k) => (e) =>
@@ -609,10 +770,12 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
   const setRowCity = (id) => (cityId) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], cityId } }));
 
-  const incompleteCount = orders.filter((o) => {
+  const incompleteOrders = orders.filter((o) => {
     const r = rows[o.id];
     return !r?.cityId || !r?.address?.trim() || !r?.phone?.trim();
-  }).length;
+  });
+  const incompleteCount = incompleteOrders.length;
+  const displayedOrders = showOnlyIncomplete && incompleteCount > 0 ? incompleteOrders : orders;
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -657,9 +820,49 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
             />
           </div>
 
-          <div style={{ fontSize: "12px", fontWeight: "600", color: "#6d7175", marginBottom: "6px" }}>
-            Review and correct each order's delivery address / phone / city before booking
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
+            <div style={{ fontSize: "12px", fontWeight: "600", color: "#6d7175" }}>
+              Review and correct delivery address / phone / city before booking
+            </div>
+            {incompleteCount > 0 && (
+              <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <span style={{ fontSize: "12px", color: "#6d7175" }}>View:</span>
+                <button
+                  type="button"
+                  onClick={() => setShowOnlyIncomplete(false)}
+                  style={{
+                    padding: "3px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #c9cccf",
+                    background: !showOnlyIncomplete ? "#202223" : "#fff",
+                    color: !showOnlyIncomplete ? "#fff" : "#6d7175",
+                    fontSize: "11px",
+                    cursor: "pointer",
+                    fontWeight: "500",
+                  }}
+                >
+                  All ({orders.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowOnlyIncomplete(true)}
+                  style={{
+                    padding: "3px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #d82c0d",
+                    background: showOnlyIncomplete ? "#d82c0d" : "#fff",
+                    color: showOnlyIncomplete ? "#fff" : "#d82c0d",
+                    fontSize: "11px",
+                    cursor: "pointer",
+                    fontWeight: "500",
+                  }}
+                >
+                  Needs attention ({incompleteCount})
+                </button>
+              </div>
+            )}
           </div>
+
           <div style={{ border: "1px solid #e1e3e5", borderRadius: "6px", overflow: "hidden" }}>
             <table style={S.table}>
               <thead>
@@ -670,7 +873,7 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
                 </tr>
               </thead>
               <tbody>
-                {orders.map((o) => (
+                {displayedOrders.map((o) => (
                   <tr key={o.id}>
                     <td style={{ ...S.td, whiteSpace: "nowrap" }}>
                       <div style={{ fontWeight: "600" }}>{o.name || `#${o.shopifyId}`}</div>
@@ -732,14 +935,25 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OrdersPage() {
-  const { orders, settings, cities } = useLoaderData();
+  const { orders, pagination, counts, filters, settings, cities } = useLoaderData();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const fetcher = useFetcher();
-  const [search, setSearch] = useState("");
+
+  const [searchInput, setSearchInput] = useState(filters?.search || "");
   const [selected, setSelected] = useState(new Set());
   const [modalOrder, setModalOrder] = useState(null);
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
   const [submittingId, setSubmittingId] = useState(null);
   const prevState = useRef("idle");
+
+  useEffect(() => {
+    setSearchInput(filters?.search || "");
+  }, [filters?.search]);
+
+  useEffect(() => {
+    setSelected(new Set());
+  }, [pagination?.page, filters?.status, filters?.search, pagination?.pageSize]);
 
   useEffect(() => {
     if (prevState.current !== "idle" && fetcher.state === "idle") {
@@ -749,23 +963,34 @@ export default function OrdersPage() {
     prevState.current = fetcher.state;
   }, [fetcher.state, fetcher.data]);
 
-  const filtered = orders.filter((o) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      (o.name || "").toLowerCase().includes(q) ||
-      (o.customerName || "").toLowerCase().includes(q)
-    );
-  });
+  const updateQuery = (updates) => {
+    const params = new URLSearchParams(searchParams);
+    Object.entries(updates).forEach(([k, v]) => {
+      if (
+        v === null ||
+        v === undefined ||
+        v === "" ||
+        (k === "page" && Number(v) === 1) ||
+        (k === "status" && v === "all") ||
+        (k === "limit" && Number(v) === 50)
+      ) {
+        params.delete(k);
+      } else {
+        params.set(k, String(v));
+      }
+    });
+    const qs = params.toString();
+    navigate(qs ? `?${qs}` : ".");
+  };
 
-  const bookableFiltered = filtered.filter((o) => o.bookingStatus !== "booked");
-  const allSelected = bookableFiltered.length > 0 && bookableFiltered.every((o) => selected.has(o.id));
+  const bookableOrders = orders.filter((o) => o.bookingStatus !== "booked");
+  const allSelected = bookableOrders.length > 0 && bookableOrders.every((o) => selected.has(o.id));
 
   const toggleSelectAll = () => {
     if (allSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(bookableFiltered.map((o) => o.id)));
+      setSelected(new Set(bookableOrders.map((o) => o.id)));
     }
   };
 
@@ -816,27 +1041,89 @@ export default function OrdersPage() {
   };
 
   const isSubmitting = fetcher.state !== "idle";
+  const activeStatus = filters?.status || "all";
+  const currentPage = pagination?.page || 1;
+  const totalPages = pagination?.totalPages || 1;
+  const pageSize = pagination?.pageSize || 50;
+  const totalCount = pagination?.total || 0;
 
   return (
     <div style={S.page}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <div style={S.card}>
-        {/* Search */}
-        <div style={S.searchWrap}>
+        {/* Search Bar */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            updateQuery({ search: searchInput.trim(), page: 1 });
+          }}
+          style={S.searchWrap}
+        >
           <span style={S.searchLabel}>Search orders</span>
-          <input
-            style={S.searchInput}
-            placeholder="Order number, customer name..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div style={{ position: "relative", flex: 1, display: "flex", alignItems: "center" }}>
+            <input
+              style={S.searchInput}
+              placeholder="Order number, customer name, phone, city..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+            {searchInput && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchInput("");
+                  updateQuery({ search: "", page: 1 });
+                }}
+                style={{
+                  position: "absolute",
+                  right: "10px",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "#8c9196",
+                  fontSize: "14px",
+                  padding: "2px 6px",
+                  lineHeight: 1,
+                }}
+                title="Clear search"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <button type="submit" style={S.searchBtn}>
+            Search
+          </button>
           <button
+            type="button"
             style={{ ...S.searchBtn, marginLeft: "auto" }}
             disabled={isSubmitting}
             onClick={() => fetcher.submit({ intent: "syncOrders" }, { method: "POST" })}
           >
             {fetcher.data?.synced !== undefined && fetcher.state === "idle" ? `Synced ${fetcher.data.synced}` : "Sync orders"}
           </button>
+        </form>
+
+        {/* Status Filter Tabs */}
+        <div style={S.tabsWrap}>
+          {[
+            { key: "all", label: "All orders", count: counts?.all ?? 0 },
+            { key: "unbooked", label: "To Book", count: counts?.unbooked ?? 0 },
+            { key: "booked", label: "Booked", count: counts?.booked ?? 0 },
+          ].map((t) => {
+            const isActive = activeStatus === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                style={isActive ? S.tabBtnActive : S.tabBtn}
+                onClick={() => updateQuery({ status: t.key, page: 1 })}
+              >
+                <span>{t.label}</span>
+                <span style={isActive ? S.tabBadgeActive : S.tabBadge}>{t.count}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Sync error banner */}
@@ -857,7 +1144,7 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {/* Bulk bar */}
+        {/* Bulk action bar */}
         <div style={S.bulkBar}>
           <input
             type="checkbox"
@@ -866,7 +1153,9 @@ export default function OrdersPage() {
             style={{ width: "15px", height: "15px", cursor: "pointer" }}
           />
           <span style={{ color: "#6d7175", fontSize: "13px" }}>
-            {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+            {selected.size > 0
+              ? `${selected.size} selected on this page`
+              : `${orders.length} order${orders.length !== 1 ? "s" : ""} on page`}
           </span>
           {selected.size > 0 && (
             <button
@@ -880,9 +1169,15 @@ export default function OrdersPage() {
         </div>
 
         {/* Table */}
-        {filtered.length === 0 ? (
+        {orders.length === 0 ? (
           <div style={{ padding: "48px", textAlign: "center", color: "#6d7175" }}>
-            {orders.length === 0 ? "No orders found in this Shopify store." : "No orders match your search."}
+            {filters?.search
+              ? "No orders match your search."
+              : activeStatus === "unbooked"
+              ? "No unbooked orders. All caught up!"
+              : activeStatus === "booked"
+              ? "No booked orders yet."
+              : "No orders found in this Shopify store."}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -895,7 +1190,7 @@ export default function OrdersPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((order) => {
+                {orders.map((order) => {
                   const booked = order.bookingStatus === "booked";
                   const isSelected = selected.has(order.id);
                   const cod = codValue(order);
@@ -971,6 +1266,53 @@ export default function OrdersPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination Footer */}
+        {totalCount > 0 && (
+          <div style={S.paginationWrap}>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px", flexWrap: "wrap" }}>
+              <span style={{ color: "#6d7175", fontSize: "13px" }}>
+                Showing <strong>{Math.min((currentPage - 1) * pageSize + 1, totalCount)}</strong>–<strong>{Math.min(currentPage * pageSize, totalCount)}</strong> of <strong>{totalCount}</strong> orders
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", color: "#6d7175" }}>
+                <label htmlFor="limit-select">Show:</label>
+                <select
+                  id="limit-select"
+                  value={pageSize}
+                  onChange={(e) => updateQuery({ limit: Number(e.target.value), page: 1 })}
+                  style={S.pageSelect}
+                >
+                  <option value={20}>20 per page</option>
+                  <option value={50}>50 per page</option>
+                  <option value={100}>100 per page</option>
+                  <option value={200}>200 per page</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <button
+                type="button"
+                style={currentPage <= 1 ? S.btnPaginationDisabled : S.btnPagination}
+                disabled={currentPage <= 1}
+                onClick={() => updateQuery({ page: currentPage - 1 })}
+              >
+                ← Prev
+              </button>
+              <span style={{ fontSize: "13px", color: "#6d7175", margin: "0 4px" }}>
+                Page <strong>{currentPage}</strong> of <strong>{totalPages}</strong>
+              </span>
+              <button
+                type="button"
+                style={currentPage >= totalPages ? S.btnPaginationDisabled : S.btnPagination}
+                disabled={currentPage >= totalPages}
+                onClick={() => updateQuery({ page: currentPage + 1 })}
+              >
+                Next →
+              </button>
+            </div>
           </div>
         )}
       </div>
