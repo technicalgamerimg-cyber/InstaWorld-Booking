@@ -61,7 +61,14 @@ function mapOrderNode(node, shop) {
     name: node.name ?? "",
     email: node.email ?? null,
     phone: node.phone ?? node.shippingAddress?.phone ?? null,
-    totalPrice: node.totalPriceSet?.shopMoney?.amount ?? "0",
+    // Cache the OUTSTANDING amount here, not the original total — totalPrice is what
+    // every display surface (Orders table, booking modal reference, Shipments page,
+    // loadsheets) reads, and it needs to move when the order is edited. Storing
+    // totalPriceSet (original, never changes after creation) meant the display never
+    // reflected an edit no matter how many times a webhook fired or "Sync orders" was
+    // clicked — only the booking action itself computed the right number, and never
+    // wrote it back here. computeOutstandingAmount already returns 0 for paid orders.
+    totalPrice: String(computeOutstandingAmount(node)),
     currency: node.totalPriceSet?.shopMoney?.currencyCode ?? "",
     financialStatus: (node.displayFinancialStatus ?? "").toLowerCase(),
     fulfillmentStatus: (node.displayFulfillmentStatus ?? "").toLowerCase(),

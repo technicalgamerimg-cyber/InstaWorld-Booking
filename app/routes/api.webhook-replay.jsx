@@ -37,7 +37,9 @@ export const action = async ({ request }) => {
         name: o.name,
         email: o.email,
         phone: o.phone || o.shipping_address?.phone || null,
-        totalPrice: o.total_price,
+        // Same fix as api.webhooks.jsx — current_total_price reflects order edits,
+        // total_price is frozen at creation.
+        totalPrice: o.financial_status === "paid" ? "0" : (o.current_total_price ?? o.total_price ?? "0"),
         currency: o.currency,
         financialStatus: o.financial_status,
         fulfillmentStatus: o.fulfillment_status,
@@ -53,7 +55,9 @@ export const action = async ({ request }) => {
         name: o.name,
         email: o.email,
         phone: o.phone || o.shipping_address?.phone || null,
-        totalPrice: o.total_price,
+        // Same fix as api.webhooks.jsx — current_total_price reflects order edits,
+        // total_price is frozen at creation.
+        totalPrice: o.financial_status === "paid" ? "0" : (o.current_total_price ?? o.total_price ?? "0"),
         currency: o.currency,
         financialStatus: o.financial_status,
         fulfillmentStatus: o.fulfillment_status,

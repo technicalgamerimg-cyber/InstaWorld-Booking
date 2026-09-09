@@ -6,6 +6,7 @@ import db from "../db.server";
 import pLimit from "p-limit";
 import { graphqlQueryWithRetry } from "../utils/graphql.server";
 import { bookOrderWithLiveSync } from "../utils/booking.server";
+import { computeOutstandingAmount } from "../utils/orderSync.server";
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ export const action = async ({ request }) => {
                 phone
                 updatedAt
                 totalPriceSet { shopMoney { amount currencyCode } }
+                totalOutstandingSet { shopMoney { amount currencyCode } }
                 displayFinancialStatus
                 displayFulfillmentStatus
                 lineItems(first: 50) {
@@ -140,7 +142,10 @@ export const action = async ({ request }) => {
             name: node.name ?? "",
             email: node.email ?? null,
             phone: node.phone ?? node.shippingAddress?.phone ?? null,
-            totalPrice: node.totalPriceSet?.shopMoney?.amount ?? "0",
+            // Outstanding amount, not the original total — see orderSync.server.js's
+            // mapOrderNode for why (this is a separate, duplicate query/mapping that
+            // predates that fix and needs the same correction).
+            totalPrice: String(computeOutstandingAmount(node)),
             currency: node.totalPriceSet?.shopMoney?.currencyCode ?? "",
             financialStatus: (node.displayFinancialStatus ?? "").toLowerCase(),
             fulfillmentStatus: (node.displayFulfillmentStatus ?? "").toLowerCase(),

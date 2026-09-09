@@ -45,7 +45,10 @@ export const action = async ({ request }) => {
           name: o.name ?? null,
           email: o.email ?? null,
           phone: o.phone || o.shipping_address?.phone || null,
-          totalPrice: o.total_price ?? "0",
+          // current_total_price (present on the REST webhook payload) reflects order
+          // edits, unlike total_price which is frozen at creation — see the "outstanding
+          // amount" note in orderSync.server.js's mapOrderNode for the full reasoning.
+          totalPrice: o.financial_status === "paid" ? "0" : (o.current_total_price ?? o.total_price ?? "0"),
           currency: o.currency ?? "",
           financialStatus: o.financial_status ?? "pending",
           fulfillmentStatus: o.fulfillment_status ?? null,
@@ -61,7 +64,10 @@ export const action = async ({ request }) => {
           name: o.name ?? null,
           email: o.email ?? null,
           phone: o.phone || o.shipping_address?.phone || null,
-          totalPrice: o.total_price ?? "0",
+          // current_total_price (present on the REST webhook payload) reflects order
+          // edits, unlike total_price which is frozen at creation — see the "outstanding
+          // amount" note in orderSync.server.js's mapOrderNode for the full reasoning.
+          totalPrice: o.financial_status === "paid" ? "0" : (o.current_total_price ?? o.total_price ?? "0"),
           currency: o.currency ?? "",
           financialStatus: o.financial_status ?? "pending",
           fulfillmentStatus: o.fulfillment_status ?? null,
