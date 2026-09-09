@@ -1,19 +1,22 @@
 import db from "../db.server";
 import { createShipment } from "./instaworld.server";
 import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server";
+import { getFreshOrderForBooking, updateShopifyOrderAddress } from "./orderSync.server";
 
-// Books a single order with InstaWorld and creates the matching Shopify fulfillment.
-// Shared by the Orders page bulk/single "Book" action and the order-details/order-index
-// admin action extensions. addressOverride/phoneOverride/cityOverride let the merchant
-// correct the consignee details right before booking without touching the Shopify order
-// or our own Order record — a one-time substitution for this shipment's payload only.
+// Final step of the booking pipeline: sends the InstaWorld createShipment payload and
+// creates the matching Shopify fulfillment. Call via bookOrderWithLiveSync below rather
+// than directly — that's what fetches a live order, computes the authoritative COD, and
+// writes any address/phone/city correction back to the real Shopify order; this function
+// just takes an already-decided order/amount and executes the booking. addressOverride/
+// phoneOverride/cityOverride here only affect the InstaWorld payload itself (the write-
+// back to Shopify already happened one level up, in bookOrderWithLiveSync).
 // cityOverride should be an exact name from the City table (InstaWorld's own list) —
 // the whole point is to stop sending whatever free-text city the Shopify order has,
 // since a typo or a non-serviceable city there is the #1 cause of booking failures.
 // Falls back to the order's own city only when no override was given.
 // Throws on hard failure (e.g. InstaWorld rejected the shipment); Shopify fulfillment
 // errors are recorded on the order but do not throw, since InstaWorld is the source of truth.
-export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride, cityOverride }) {
+export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride, cityOverride, codSource }) {
   const nameParts = (order.customerName || "Customer").split(" ");
 
   const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
@@ -136,6 +139,9 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
       courierName: result.courier || null,
       shopifyFulfillmentState: shopifyFulfillmentState ?? "pending",
       shopifySyncStatus: shopifyFulfillmentId ? "synced" : "failed",
+      lastBookingAmount: codAmount,
+      lastBookingAmountSource: codSource ?? null,
+      lastBookingSyncAt: new Date(),
       ...(shopifyFulfillmentId ? { shopifyFulfillmentId } : {}),
       ...(shopifyFulfillmentError ? { shopifyFulfillmentError } : {}),
     },
@@ -144,6 +150,72 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
   return { id: order.id, trackingNumber: result.tracking_number };
 }
 
-export function defaultCodValue(order) {
-  return order.financialStatus === "paid" ? 0 : parseFloat(order.totalPrice || "0");
+// The single engine all 4 booking gateways (web single/bulk, extension single/bulk)
+// must go through — "there should not be four different ways of deciding COD."
+//
+// Never books using a potentially stale DB amount: always re-fetches the order from
+// Shopify live immediately before creating the InstaWorld shipment, uses that fetch's
+// totalOutstandingSet as the authoritative default COD (unless the merchant explicitly
+// typed an override), re-syncs the DB with whatever Shopify returned, and writes any
+// address/phone/city correction back to the real Shopify order (best-effort — this
+// step never blocks the booking itself). If Shopify can't be reached or the order no
+// longer exists, this throws rather than falling back to cached data — the caller's
+// existing per-order failure handling (Promise.allSettled) surfaces that as a normal
+// booking failure ("please retry"), leaving the rest of a batch unaffected.
+export async function bookOrderWithLiveSync({
+  admin, shop, shopifyId, apiKey, weightGrams, defaultWeightKg,
+  customCod, instructions, defaultInstructions,
+  addressOverride, phoneOverride, cityOverride,
+}) {
+  // Cheap pre-check so an already-booked order doesn't waste a live Shopify call.
+  const existing = await db.order.findUnique({
+    where: { shopifyId },
+    select: { id: true, bookingStatus: true, trackingNumber: true },
+  });
+  if (existing && (existing.bookingStatus === "booked" || existing.trackingNumber)) {
+    return { id: existing.id, skipped: true };
+  }
+
+  let fresh;
+  try {
+    fresh = await getFreshOrderForBooking({ admin, shop, shopifyId });
+  } catch (err) {
+    throw new Error(`Unable to verify latest Shopify order (order ${shopifyId}): ${err.message}. Please retry.`);
+  }
+
+  const { dbOrder, node, outstandingAmount } = fresh;
+
+  // Re-check post-sync — another concurrent booking could have completed between the
+  // pre-check above and this fetch resolving.
+  if (dbOrder.bookingStatus === "booked" || dbOrder.trackingNumber) {
+    return { id: dbOrder.id, skipped: true };
+  }
+
+  const weightKg = weightGrams !== null && !Number.isNaN(weightGrams) ? weightGrams / 1000 : defaultWeightKg;
+  const hasOverride = customCod !== null && !Number.isNaN(customCod);
+  const codAmount = hasOverride ? customCod : outstandingAmount;
+  const codSource = hasOverride ? "override" : "shopify_outstanding";
+
+  try {
+    await updateShopifyOrderAddress(admin, shopifyId, node.shippingAddress, {
+      address: addressOverride,
+      phone: phoneOverride,
+      city: cityOverride,
+    });
+  } catch (err) {
+    console.error(`[bookOrderWithLiveSync] Shopify address write-back failed for ${dbOrder.name}:`, err.message);
+  }
+
+  return bookOrderShipment({
+    admin,
+    order: dbOrder,
+    apiKey,
+    weightKg,
+    codAmount,
+    codSource,
+    instructions: instructions ?? defaultInstructions ?? "",
+    addressOverride,
+    phoneOverride,
+    cityOverride,
+  });
 }

@@ -111,7 +111,7 @@ function Extension() {
   const [alreadyBooked, setAlreadyBooked] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(true);
   const [weight, setWeight] = useState("1000");
-  const [cod, setCod] = useState("0");
+  const [cod, setCod] = useState(""); // blank = use Shopify's live outstanding amount at booking time
   const [instructions, setInstructions] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
@@ -143,7 +143,11 @@ function Extension() {
         setHasApiKey(json.settings.hasApiKey);
         setTrackingNumber(json.order.trackingNumber || null);
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
-        setCod(defaultCod(json.order));
+        // Left blank deliberately — a stale DB-cached total sitting in this field
+        // would be indistinguishable from a merchant's intentional override once
+        // submitted. Blank means "use Shopify's live outstanding amount at booking
+        // time" (see bookOrderWithLiveSync); lastKnownCod below is shown for
+        // reference only.
         setInstructions(json.settings.defaultInstructions || "");
         setAddress(json.order.address || "");
         setPhone(json.order.phone || "");
@@ -272,6 +276,7 @@ function Extension() {
         />
         <s-number-field
           label={i18n.translate("codLabel")}
+          details={`Blank = Shopify's live amount (last synced: ${defaultCod(order)} ${order.currency || "PKR"})`}
           value={cod}
           min="0"
           suffix={order.currency || "PKR"}

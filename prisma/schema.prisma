@@ -51,6 +51,11 @@ model Order {
   shopifyFulfillmentState String?  @default("pending")
   shopifySyncStatus       String?  @default("pending")
   shopifyUpdatedAt        DateTime?
+  // Booking-time audit trail — set by bookOrderWithLiveSync/bookOrderShipment so a
+  // booked amount can always be traced back to why it was that number.
+  lastBookingAmount       Float?
+  lastBookingAmountSource String?
+  lastBookingSyncAt       DateTime?
   createdAt               DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

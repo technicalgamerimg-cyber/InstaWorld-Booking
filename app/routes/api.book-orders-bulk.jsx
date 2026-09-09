@@ -2,16 +2,19 @@ import pLimit from "p-limit";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureOrderInDb, parseOrderGid } from "../utils/orderSync.server";
-import { bookOrderShipment, defaultCodValue } from "../utils/booking.server";
+import { bookOrderWithLiveSync } from "../utils/booking.server";
 import { getCities } from "../utils/cities.server";
 
 // Backend for the "Book with Instant Bulk Booking" bulk-selection admin action
 // extension (extensions/instant-book-orders-bulk) on the Orders index page —
-// merchants select many orders, review/correct each one's address and phone, and
+// merchants select many orders, review/correct each one's address/phone/city, and
 // book them all in one action. Mirrors the bulk "book" intent already in
-// app.orders.jsx (same concurrency, same shared bookOrderShipment/ensureOrderInDb
-// utils), just reachable from outside the embedded app via authenticate.admin's
-// extension bearer-token support, same as api.book-order.jsx.
+// app.orders.jsx (same concurrency, same shared bookOrderWithLiveSync engine), just
+// reachable from outside the embedded app via authenticate.admin's extension
+// bearer-token support, same as api.book-order.jsx. The loader's ensureOrderInDb is
+// cache-first (fine for prefill display); the action's bookOrderWithLiveSync always
+// re-fetches Shopify live and writes the correction back to the real order — see
+// app/utils/orderSync.server.js and app/utils/booking.server.js.
 
 function orderSummary(order) {
   return {
@@ -90,36 +93,25 @@ export const action = async ({ request }) => {
   const weightGrams = body.weight !== undefined && body.weight !== null && body.weight !== ""
     ? parseFloat(body.weight)
     : null;
-  const weightKg = weightGrams !== null && !Number.isNaN(weightGrams)
-    ? weightGrams / 1000
-    : (settings.defaultWeight ?? 1);
-
   const customCod = body.cod !== undefined && body.cod !== null && body.cod !== ""
     ? parseFloat(body.cod)
     : null;
 
-  const instructions = body.instructions || settings.defaultInstructions || "";
-
-  const bookOne = async ({ shopifyId, address, phone, city }) => {
-    const order = await ensureOrderInDb({ admin, shop: session.shop, shopifyId });
-    if (!order || order.bookingStatus === "booked" || order.trackingNumber) {
-      return { skipped: true };
-    }
-
-    const codAmount = customCod !== null && !Number.isNaN(customCod) ? customCod : defaultCodValue(order);
-
-    return bookOrderShipment({
+  const bookOne = ({ shopifyId, address, phone, city }) =>
+    bookOrderWithLiveSync({
       admin,
-      order,
+      shop: session.shop,
+      shopifyId,
       apiKey: settings.instaworldApiKey,
-      weightKg,
-      codAmount,
-      instructions,
+      weightGrams,
+      defaultWeightKg: settings.defaultWeight ?? 1,
+      customCod,
+      instructions: body.instructions || null,
+      defaultInstructions: settings.defaultInstructions,
       addressOverride: address,
       phoneOverride: phone,
       cityOverride: city,
     });
-  };
 
   const limit = pLimit(5);
   const results = await Promise.allSettled(items.map((item) => limit(() => bookOne(item))));

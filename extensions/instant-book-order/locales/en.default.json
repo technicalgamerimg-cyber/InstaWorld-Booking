@@ -8,7 +8,7 @@
   "phoneLabel": "Phone number *",
   "cityLabel": "InstaWorld city *",
   "weightLabel": "Weight (grams)",
-  "codLabel": "COD amount",
+  "codLabel": "COD override (optional)",
   "instructionsLabel": "Special instructions",
   "confirm": "Confirm booking",
   "cancel": "Cancel",

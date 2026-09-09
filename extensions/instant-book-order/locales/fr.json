@@ -8,7 +8,7 @@
   "phoneLabel": "Numéro de téléphone *",
   "cityLabel": "Ville InstaWorld *",
   "weightLabel": "Poids (grammes)",
-  "codLabel": "Montant COD",
+  "codLabel": "Montant COD (optionnel)",
   "instructionsLabel": "Instructions spéciales",
   "confirm": "Confirmer la réservation",
   "cancel": "Annuler",

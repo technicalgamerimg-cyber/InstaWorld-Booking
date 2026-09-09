@@ -1,7 +1,7 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { ensureOrderInDb, parseOrderGid } from "../utils/orderSync.server";
-import { bookOrderShipment, defaultCodValue } from "../utils/booking.server";
+import { bookOrderWithLiveSync } from "../utils/booking.server";
 import { getCities } from "../utils/cities.server";
 
 // Backend for the "Book with Instant Bulk Booking" admin action extension
@@ -82,44 +82,32 @@ export const action = async ({ request }) => {
     return cors(Response.json({ ok: false, error: "InstaWorld API key not configured. Go to Settings first." }));
   }
 
+  const weightGrams = body.weight !== undefined && body.weight !== null && body.weight !== ""
+    ? parseFloat(body.weight)
+    : null;
+  const customCod = body.cod !== undefined && body.cod !== null && body.cod !== ""
+    ? parseFloat(body.cod)
+    : null;
+
   try {
-    const order = await ensureOrderInDb({ admin, shop: session.shop, shopifyId });
-    if (!order) {
-      return cors(Response.json({ ok: false, error: "Order not found in Shopify." }, { status: 404 }));
-    }
-    if (order.bookingStatus === "booked" || order.trackingNumber) {
-      return cors(Response.json({
-        ok: false,
-        error: "This order is already booked.",
-        trackingNumber: order.trackingNumber,
-      }));
-    }
-
-    const weightGrams = body.weight !== undefined && body.weight !== null && body.weight !== ""
-      ? parseFloat(body.weight)
-      : null;
-    const weightKg = weightGrams !== null && !Number.isNaN(weightGrams)
-      ? weightGrams / 1000
-      : (settings.defaultWeight ?? 1);
-
-    const customCod = body.cod !== undefined && body.cod !== null && body.cod !== ""
-      ? parseFloat(body.cod)
-      : null;
-    const codAmount = customCod !== null && !Number.isNaN(customCod) ? customCod : defaultCodValue(order);
-
-    const instructions = body.instructions || settings.defaultInstructions || "";
-
-    const result = await bookOrderShipment({
+    const result = await bookOrderWithLiveSync({
       admin,
-      order,
+      shop: session.shop,
+      shopifyId,
       apiKey: settings.instaworldApiKey,
-      weightKg,
-      codAmount,
-      instructions,
+      weightGrams,
+      defaultWeightKg: settings.defaultWeight ?? 1,
+      customCod,
+      instructions: body.instructions || null,
+      defaultInstructions: settings.defaultInstructions,
       addressOverride: body.address,
       phoneOverride: body.phone,
       cityOverride: body.city,
     });
+
+    if (result.skipped) {
+      return cors(Response.json({ ok: false, error: "This order is already booked." }));
+    }
 
     return cors(Response.json({ ok: true, trackingNumber: result.trackingNumber }));
   } catch (err) {

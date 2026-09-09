@@ -5,7 +5,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import pLimit from "p-limit";
 import { graphqlQueryWithRetry } from "../utils/graphql.server";
-import { bookOrderShipment, defaultCodValue } from "../utils/booking.server";
+import { bookOrderWithLiveSync } from "../utils/booking.server";
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
@@ -174,45 +174,38 @@ export const action = async ({ request }) => {
     const weightGrams = form.get("weight") ? parseFloat(form.get("weight")) : null;
     const customCod = form.get("cod") !== null && form.get("cod") !== "" ? parseFloat(form.get("cod")) : null;
     const instructions = form.get("instructions") || null;
-    // Per-order address/phone corrections entered right before booking — one-time
-    // overrides for the InstaWorld payload only, never written back to the Order
-    // record or the Shopify order. Keyed by the same numeric order.id as `ids`.
+    // Per-order address/phone/city corrections entered right before booking — written
+    // back to the real Shopify order (see bookOrderWithLiveSync), not just used for
+    // the InstaWorld payload. Keyed by the same numeric order.id as `ids`.
     const overrides = form.get("overrides") ? JSON.parse(form.get("overrides")) : {};
 
     const shopSettings = await db.settings.findUnique({ where: { shop: session.shop } });
-    // admin is captured from the outer destructure and available to bookOne via closure
     if (!shopSettings?.instaworldApiKey) {
       return { ok: false, failures: [{ reason: "InstaWorld API key not configured. Go to Settings first." }], succeeded: 0, failed: 1 };
     }
 
     const apiKey = shopSettings.instaworldApiKey;
     const defaultWeightKg = shopSettings.defaultWeight ?? 1;
-    const weightKg = weightGrams !== null ? weightGrams / 1000 : defaultWeightKg;
 
+    // Only need id (for the overrides lookup) + shopifyId (for the live fetch) —
+    // bookOrderWithLiveSync fetches everything else itself, fresh, at booking time.
     const dbOrders = await db.order.findMany({
       where: { id: { in: ids.map(Number) }, shop: session.shop },
-      select: {
-        id: true, shopifyId: true, name: true, customerName: true, email: true,
-        phone: true, address: true, city: true, totalPrice: true, financialStatus: true,
-        lineItems: true, bookingStatus: true, trackingNumber: true,
-      },
+      select: { id: true, shopifyId: true },
     });
 
-    const bookOne = async (order) => {
-      if (order.bookingStatus === "booked" || order.trackingNumber) {
-        return { id: order.id, skipped: true };
-      }
-
-      const codAmount = customCod !== null ? customCod : defaultCodValue(order);
+    const bookOne = (order) => {
       const override = overrides[order.id] || {};
-
-      return bookOrderShipment({
+      return bookOrderWithLiveSync({
         admin,
-        order,
+        shop: session.shop,
+        shopifyId: order.shopifyId,
         apiKey,
-        weightKg,
-        codAmount,
-        instructions: instructions ?? shopSettings.defaultInstructions ?? "",
+        weightGrams,
+        defaultWeightKg,
+        customCod,
+        instructions,
+        defaultInstructions: shopSettings.defaultInstructions,
         addressOverride: override.address,
         phoneOverride: override.phone,
         cityOverride: override.city,
@@ -472,12 +465,17 @@ function CitySelect({ cities, value, onChange }) {
 // ─── Modal ───────────────────────────────────────────────────────────────────
 
 function BookingModal({ order, settings, cities, onClose, onConfirm }) {
-  const cod = codValue(order);
+  // Last-known COD is DB-cached and may be stale (see investigation notes) — it's
+  // shown only as a reference, never prefilled into the form. Leaving cod blank means
+  // "use Shopify's live outstanding amount at booking time"; a stale cached number
+  // sitting in the field would otherwise be indistinguishable from a merchant's
+  // deliberate override.
+  const lastKnownCod = codValue(order);
   const defaultWeightGrams = String(Math.round((settings?.defaultWeight || 1) * 1000));
   const [form, setForm] = useState({
     weight: defaultWeightGrams,
     pieces: "1",
-    cod,
+    cod: "",
     instructions: settings?.defaultInstructions || "",
     address: order.address || "",
     phone: order.phone || "",
@@ -497,7 +495,7 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
               🛵 Custom booking — {order.name || `#${order.shopifyId}`}
             </div>
             <div style={{ color: "#6d7175", fontSize: "13px", marginTop: "3px" }}>
-              {[order.customerName, order.city, `COD ${cod} ${order.currency || "PKR"}`].filter(Boolean).join(" · ")}
+              {[order.customerName, order.city, `Last synced COD ${lastKnownCod} ${order.currency || "PKR"}`].filter(Boolean).join(" · ")}
             </div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#6d7175", lineHeight: 1 }}>✕</button>
@@ -506,16 +504,17 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
         <div style={{ padding: "18px 20px" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px", marginBottom: "14px" }}>
             {[
-              { label: "Weight (grams)", key: "weight" },
-              { label: "Pieces", key: "pieces" },
-              { label: "COD amount (PKR)", key: "cod" },
-            ].map(({ label, key }) => (
+              { label: "Weight (grams)", key: "weight", placeholder: undefined },
+              { label: "Pieces", key: "pieces", placeholder: undefined },
+              { label: "COD override (optional)", key: "cod", placeholder: `Blank = Shopify's live amount (~${lastKnownCod})` },
+            ].map(({ label, key, placeholder }) => (
               <div key={key}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>{label}</label>
                 <input
                   type="number"
                   value={form[key]}
                   onChange={set(key)}
+                  placeholder={placeholder}
                   style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
                 />
               </div>
