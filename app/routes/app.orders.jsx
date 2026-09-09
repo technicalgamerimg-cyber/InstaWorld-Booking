@@ -113,6 +113,8 @@ export const loader = async ({ request }) => {
       settings: {
         defaultWeight: shopSettings?.defaultWeight ?? 1,
         defaultInstructions: shopSettings?.defaultInstructions ?? "",
+        availableCouriers: Array.isArray(shopSettings?.availableCouriers) ? shopSettings.availableCouriers : [],
+        defaultCourier: shopSettings?.defaultCourier || "Auto",
       },
       cities,
     };
@@ -246,6 +248,7 @@ export const action = async ({ request }) => {
     const weightGrams = form.get("weight") ? parseFloat(form.get("weight")) : null;
     const customCod = form.get("cod") !== null && form.get("cod") !== "" ? parseFloat(form.get("cod")) : null;
     const instructions = form.get("instructions") || null;
+    const courier = form.get("courier") || null;
     // Per-order address/phone/city corrections entered right before booking — written
     // back to the real Shopify order (see bookOrderWithLiveSync), not just used for
     // the InstaWorld payload. Keyed by the same numeric order.id as `ids`.
@@ -276,6 +279,7 @@ export const action = async ({ request }) => {
         weightGrams,
         defaultWeightKg,
         customCod,
+        courier,
         instructions,
         defaultInstructions: shopSettings.defaultInstructions,
         addressOverride: override.address,
@@ -637,10 +641,13 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
   // deliberate override.
   const lastKnownCod = codValue(order);
   const defaultWeightGrams = String(Math.round((settings?.defaultWeight || 1) * 1000));
+  const availableCouriers = Array.isArray(settings?.availableCouriers) ? settings.availableCouriers : [];
+  const defaultCourier = settings?.defaultCourier || "Auto";
   const [form, setForm] = useState({
     weight: defaultWeightGrams,
     pieces: "1",
     cod: "",
+    courier: defaultCourier,
     instructions: settings?.defaultInstructions || "",
     address: order.address || "",
     phone: order.phone || "",
@@ -717,6 +724,23 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
             </label>
             <CitySelect cities={cities} value={form.cityId} onChange={(id) => setForm((f) => ({ ...f, cityId: id }))} />
           </div>
+          <div style={{ marginBottom: "14px" }}>
+            <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>
+              Courier
+            </label>
+            <select
+              value={form.courier}
+              onChange={set("courier")}
+              style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box", background: "#fff" }}
+            >
+              <option value="Auto">Auto (InstaWorld Default)</option>
+              {availableCouriers.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
             <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Special instructions</label>
             <textarea
@@ -750,9 +774,12 @@ function BookingModal({ order, settings, cities, onClose, onConfirm }) {
 
 function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
   const defaultWeightGrams = String(Math.round((settings?.defaultWeight || 1) * 1000));
+  const availableCouriers = Array.isArray(settings?.availableCouriers) ? settings.availableCouriers : [];
+  const defaultCourier = settings?.defaultCourier || "Auto";
   const [shared, setShared] = useState({
     weight: defaultWeightGrams,
     cod: "",
+    courier: defaultCourier,
     instructions: settings?.defaultInstructions || "",
   });
   const [rows, setRows] = useState(() =>
@@ -789,9 +816,9 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
         </div>
         {/* Body */}
         <div style={{ padding: "18px 20px", overflowY: "auto" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "14px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px", marginBottom: "14px" }}>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Weight (grams) — applied to all</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Weight (grams) — all</label>
               <input
                 type="number"
                 value={shared.weight}
@@ -805,9 +832,24 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
                 type="number"
                 value={shared.cod}
                 onChange={setShare("cod")}
-                placeholder="Leave blank to use each order's total"
+                placeholder="Blank = order total"
                 style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box" }}
               />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Courier — all</label>
+              <select
+                value={shared.courier}
+                onChange={setShare("courier")}
+                style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box", background: "#fff" }}
+              >
+                <option value="Auto">Auto (InstaWorld Default)</option>
+                {availableCouriers.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <div style={{ marginBottom: "16px" }}>
@@ -1013,6 +1055,7 @@ export default function OrdersPage() {
         weight: form.weight,
         pieces: form.pieces,
         cod: form.cod,
+        courier: form.courier || "",
         instructions: form.instructions,
         overrides: JSON.stringify({ [modalOrder.id]: { address: form.address, phone: form.phone, city: cityName(form.cityId) } }),
       },
@@ -1032,6 +1075,7 @@ export default function OrdersPage() {
         orderIds: JSON.stringify(ids),
         weight: shared.weight,
         cod: shared.cod,
+        courier: shared.courier || "",
         instructions: shared.instructions,
         overrides: JSON.stringify(overrides),
       },

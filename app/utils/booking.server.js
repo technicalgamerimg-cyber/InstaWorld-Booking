@@ -1,7 +1,7 @@
-import db from "../db.server";
-import { createShipment } from "./instaworld.server";
-import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server";
-import { getFreshOrderForBooking, updateShopifyOrderAddress } from "./orderSync.server";
+import db from "../db.server.js";
+import { createShipment } from "./instaworld.server.js";
+import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server.js";
+import { getFreshOrderForBooking, updateShopifyOrderAddress } from "./orderSync.server.js";
 
 // Final step of the booking pipeline: sends the InstaWorld createShipment payload and
 // creates the matching Shopify fulfillment. Call via bookOrderWithLiveSync below rather
@@ -16,7 +16,7 @@ import { getFreshOrderForBooking, updateShopifyOrderAddress } from "./orderSync.
 // Falls back to the order's own city only when no override was given.
 // Throws on hard failure (e.g. InstaWorld rejected the shipment); Shopify fulfillment
 // errors are recorded on the order but do not throw, since InstaWorld is the source of truth.
-export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride, cityOverride, codSource }) {
+export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmount, instructions, addressOverride, phoneOverride, cityOverride, codSource, courier }) {
   const nameParts = (order.customerName || "Customer").split(" ");
 
   const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
@@ -52,6 +52,7 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
     financial_status: codAmount > 0 ? "cod" : "paid",
     remarks: instructions || "",
     items,
+    ...(courier && courier !== "Auto" ? { courier } : {}),
   };
 
   // createShipment has built-in retry (3 attempts) + 30s AbortController timeout
@@ -180,6 +181,7 @@ export async function bookOrderWithLiveSync({
   admin, shop, shopifyId, apiKey, weightGrams, defaultWeightKg,
   customCod, instructions, defaultInstructions,
   addressOverride, phoneOverride, cityOverride,
+  courier,
 }) {
   // Cheap pre-check so an already-booked order doesn't waste a live Shopify call.
   const existing = await db.order.findUnique({
@@ -188,6 +190,27 @@ export async function bookOrderWithLiveSync({
   });
   if (existing && (existing.bookingStatus === "booked" || existing.trackingNumber)) {
     return { id: existing.id, skipped: true };
+  }
+
+  // Validate courier against store's configured availableCouriers
+  const settings = await db.settings.findUnique({
+    where: { shop },
+    select: { availableCouriers: true, defaultCourier: true },
+  });
+  const availableCouriers = Array.isArray(settings?.availableCouriers) ? settings.availableCouriers : [];
+
+  let finalCourier = courier;
+  if (finalCourier && finalCourier !== "Auto") {
+    if (!availableCouriers.includes(finalCourier)) {
+      throw new Error(`Courier "${finalCourier}" is not available for this store.`);
+    }
+  } else if (!finalCourier) {
+    // Fallback to store default if no courier was passed
+    if (settings?.defaultCourier && settings.defaultCourier !== "Auto" && availableCouriers.includes(settings.defaultCourier)) {
+      finalCourier = settings.defaultCourier;
+    } else {
+      finalCourier = "Auto";
+    }
   }
 
   let fresh;
@@ -231,5 +254,6 @@ export async function bookOrderWithLiveSync({
     addressOverride,
     phoneOverride,
     cityOverride,
+    courier: finalCourier,
   });
 }

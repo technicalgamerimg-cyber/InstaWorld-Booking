@@ -110,6 +110,8 @@ function Extension() {
   const [order, setOrder] = useState(null);
   const [alreadyBooked, setAlreadyBooked] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(true);
+  const [courier, setCourier] = useState("Auto");
+  const [availableCouriers, setAvailableCouriers] = useState([]);
   const [weight, setWeight] = useState("1000");
   const [cod, setCod] = useState(""); // blank = use Shopify's live outstanding amount at booking time
   const [instructions, setInstructions] = useState("");
@@ -141,6 +143,8 @@ function Extension() {
         setOrder(json.order);
         setAlreadyBooked(json.alreadyBooked);
         setHasApiKey(json.settings.hasApiKey);
+        setAvailableCouriers(json.settings.availableCouriers || []);
+        setCourier(json.settings.defaultCourier || "Auto");
         setTrackingNumber(json.order.trackingNumber || null);
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
         // Left blank deliberately — a stale DB-cached total sitting in this field
@@ -173,6 +177,7 @@ function Extension() {
           orderId: orderGid,
           weight,
           cod,
+          courier,
           instructions,
           address,
           phone,
@@ -282,6 +287,18 @@ function Extension() {
           suffix={order.currency || "PKR"}
           onInput={(e) => setCod(e.currentTarget.value)}
         />
+        <s-select
+          label={i18n.translate("courierLabel") || "Courier"}
+          value={courier}
+          onInput={(e) => setCourier(e.currentTarget.value)}
+        >
+          <s-option value="Auto">Auto (InstaWorld Default)</s-option>
+          {availableCouriers.map((c) => (
+            <s-option key={c} value={c}>
+              {c}
+            </s-option>
+          ))}
+        </s-select>
         <s-text-area
           label={i18n.translate("instructionsLabel")}
           value={instructions}

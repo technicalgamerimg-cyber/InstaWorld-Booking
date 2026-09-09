@@ -9,6 +9,7 @@
   "cityLabel": "InstaWorld city *",
   "weightLabel": "Weight (grams)",
   "codLabel": "COD override (optional)",
+  "courierLabel": "Courier",
   "instructionsLabel": "Special instructions",
   "confirm": "Confirm booking",
   "cancel": "Cancel",

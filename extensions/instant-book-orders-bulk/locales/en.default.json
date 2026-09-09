@@ -9,6 +9,8 @@
   "weightDetails": "Applied to every order in this batch",
   "codLabel": "COD amount override (optional)",
   "codDetails": "Leave blank to use each order's own total (or 0 if already paid)",
+  "courierLabel": "Courier",
+  "courierDetails": "Applied to every order in this batch",
   "instructionsLabel": "Special instructions",
   "reviewHeading": "Review and correct each order's delivery address / phone before booking",
   "addressLabel": "Delivery address *",

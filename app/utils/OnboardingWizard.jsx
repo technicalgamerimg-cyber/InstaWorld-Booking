@@ -166,10 +166,12 @@ const STEPS = [
 
 export default function OnboardingWizard({ onComplete }) {
   const fetcher = useFetcher();
+  const courierFetcher = useFetcher();
   const [step, setStep] = useState(1);
   const [showApiKey, setShowApiKey] = useState(false);
   const [form, setForm] = useState({
     instaworldApiKey: "",
+    defaultCourier: "Auto",
     shipperName: "",
     shipperPhone: "",
     shipperAddress: "",
@@ -180,11 +182,21 @@ export default function OnboardingWizard({ onComplete }) {
   const update = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
   const isSubmitting = fetcher.state !== "idle";
-  const apiKeyError = fetcher.data?.error;
+  const isCheckingCouriers = courierFetcher.state !== "idle";
+  const apiKeyError = fetcher.data?.error || courierFetcher.data?.error;
+  const detectedCouriers = courierFetcher.data?.availableCouriers || [];
 
   useEffect(() => {
     if (fetcher.data?.ok) onComplete();
   }, [fetcher.data]);
+
+  const handleCheckCouriers = () => {
+    if (!form.instaworldApiKey.trim()) return;
+    courierFetcher.submit(
+      { intent: "checkCouriers", instaworldApiKey: form.instaworldApiKey },
+      { method: "POST", action: "/api/onboarding" }
+    );
+  };
 
   const submit = () =>
     fetcher.submit(form, { method: "POST", action: "/api/onboarding" });
@@ -260,6 +272,47 @@ export default function OnboardingWizard({ onComplete }) {
                   </button>
                 </div>
                 <p style={S.hint}>Found in your InstaWorld merchant dashboard under API settings.</p>
+
+                {/* Check couriers button in step 1 */}
+                <div style={{ marginTop: "12px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    disabled={isCheckingCouriers || !form.instaworldApiKey.trim()}
+                    onClick={handleCheckCouriers}
+                    style={{
+                      padding: "7px 14px",
+                      background: "#fff",
+                      border: "1px solid #c9cccf",
+                      borderRadius: "6px",
+                      cursor: isCheckingCouriers || !form.instaworldApiKey.trim() ? "not-allowed" : "pointer",
+                      fontSize: "13px",
+                      fontWeight: "500",
+                      color: "#202223",
+                    }}
+                  >
+                    {isCheckingCouriers ? "Checking couriers…" : "Check Available Couriers"}
+                  </button>
+                  {detectedCouriers.length > 0 && (
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                      {detectedCouriers.map((c) => (
+                        <span
+                          key={c}
+                          style={{
+                            padding: "3px 8px",
+                            borderRadius: "12px",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            background: "#e3f1df",
+                            color: "#008060",
+                            border: "1px solid #b7e3bd",
+                          }}
+                        >
+                          ✓ {c}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -284,6 +337,22 @@ export default function OnboardingWizard({ onComplete }) {
 
           {step === 3 && (
             <>
+              <div style={S.field}>
+                <label style={S.label}>Default preferred courier</label>
+                <select
+                  value={form.defaultCourier}
+                  onChange={update("defaultCourier")}
+                  style={{ ...S.input, maxWidth: "260px" }}
+                >
+                  <option value="Auto">Auto (InstaWorld Default)</option>
+                  {detectedCouriers.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <p style={S.hint}>Pre-selects this courier when booking orders. Can be overridden per order.</p>
+              </div>
               <div style={S.field}>
                 <label style={S.label}>Default item weight (kg)</label>
                 <input type="number" value={form.defaultWeight} onChange={update("defaultWeight")} min="0.1" step="0.1" style={{ ...S.input, maxWidth: "160px" }} />

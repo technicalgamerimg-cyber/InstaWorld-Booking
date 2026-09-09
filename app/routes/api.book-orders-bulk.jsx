@@ -55,6 +55,8 @@ export const loader = async ({ request }) => {
         hasApiKey: Boolean(settings?.instaworldApiKey),
         defaultWeight: settings?.defaultWeight ?? 1,
         defaultInstructions: settings?.defaultInstructions ?? "",
+        availableCouriers: Array.isArray(settings?.availableCouriers) ? settings.availableCouriers : [],
+        defaultCourier: settings?.defaultCourier || "Auto",
       },
     }));
   } catch (err) {
@@ -96,6 +98,7 @@ export const action = async ({ request }) => {
   const customCod = body.cod !== undefined && body.cod !== null && body.cod !== ""
     ? parseFloat(body.cod)
     : null;
+  const courier = body.courier || null;
 
   const bookOne = ({ shopifyId, address, phone, city }) =>
     bookOrderWithLiveSync({
@@ -106,6 +109,7 @@ export const action = async ({ request }) => {
       weightGrams,
       defaultWeightKg: settings.defaultWeight ?? 1,
       customCod,
+      courier,
       instructions: body.instructions || null,
       defaultInstructions: settings.defaultInstructions,
       addressOverride: address,

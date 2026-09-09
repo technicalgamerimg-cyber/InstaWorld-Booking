@@ -67,6 +67,8 @@ model Settings {
   id                  Int      @id @default(autoincrement())
   shop                String   @unique
   instaworldApiKey    String?
+  availableCouriers   Json?
+  defaultCourier      String?  @default("Auto")
   defaultWeight       Float?   @default(1)
   defaultInstructions String?
   shipperName         String?

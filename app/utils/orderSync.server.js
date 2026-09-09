@@ -1,5 +1,5 @@
-import db from "../db.server";
-import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server";
+import db from "../db.server.js";
+import { graphqlQueryWithRetry, parseGraphQLResponse } from "./graphql.server.js";
 
 // Shared field set for both the "create if missing" lookup (ensureOrderInDb, used by
 // loaders — cheap, cache-first, fine to be a little stale) and the "always live"

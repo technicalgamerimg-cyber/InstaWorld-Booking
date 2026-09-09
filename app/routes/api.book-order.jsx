@@ -54,6 +54,8 @@ export const loader = async ({ request }) => {
         hasApiKey: Boolean(settings?.instaworldApiKey),
         defaultWeight: settings?.defaultWeight ?? 1,
         defaultInstructions: settings?.defaultInstructions ?? "",
+        availableCouriers: Array.isArray(settings?.availableCouriers) ? settings.availableCouriers : [],
+        defaultCourier: settings?.defaultCourier || "Auto",
       },
     }));
   } catch (err) {
@@ -98,6 +100,7 @@ export const action = async ({ request }) => {
       weightGrams,
       defaultWeightKg: settings.defaultWeight ?? 1,
       customCod,
+      courier: body.courier || null,
       instructions: body.instructions || null,
       defaultInstructions: settings.defaultInstructions,
       addressOverride: body.address,

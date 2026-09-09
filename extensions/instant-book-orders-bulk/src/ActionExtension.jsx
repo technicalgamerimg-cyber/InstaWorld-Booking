@@ -105,6 +105,8 @@ function Extension() {
   const [phase, setPhase] = useState("loading"); // loading | ready | submitting | results | loadError
   const [orders, setOrders] = useState([]);
   const [hasApiKey, setHasApiKey] = useState(true);
+  const [courier, setCourier] = useState("Auto");
+  const [availableCouriers, setAvailableCouriers] = useState([]);
   const [weight, setWeight] = useState("1000");
   const [cod, setCod] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -134,6 +136,8 @@ function Extension() {
 
         setOrders(json.orders);
         setHasApiKey(json.settings.hasApiKey);
+        setAvailableCouriers(json.settings.availableCouriers || []);
+        setCourier(json.settings.defaultCourier || "Auto");
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
         setInstructions(json.settings.defaultInstructions || "");
         setCities(json.cities || []);
@@ -178,7 +182,7 @@ function Extension() {
       const res = await authedFetch("/api/book-orders-bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items, weight, cod, instructions }),
+        body: JSON.stringify({ items, weight, cod, courier, instructions }),
       });
       const json = await res.json();
       if (!json.ok && !("succeeded" in json)) {
@@ -273,6 +277,19 @@ function Extension() {
             onInput={(e) => setCod(e.currentTarget.value)}
           />
         </s-stack>
+        <s-select
+          label={i18n.translate("courierLabel") || "Courier"}
+          details={i18n.translate("courierDetails") || "Applied to every order in this batch"}
+          value={courier}
+          onInput={(e) => setCourier(e.currentTarget.value)}
+        >
+          <s-option value="Auto">Auto (InstaWorld Default)</s-option>
+          {availableCouriers.map((c) => (
+            <s-option key={c} value={c}>
+              {c}
+            </s-option>
+          ))}
+        </s-select>
         <s-text-area
           label={i18n.translate("instructionsLabel")}
           value={instructions}

@@ -4,6 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { syncCities } from "../utils/cities.server";
+import { detectAndSaveAvailableCouriers } from "../utils/couriers.server";
 
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,8 @@ export const loader = async ({ request }) => {
   ]);
   return {
     instaworldApiKey: settings?.instaworldApiKey || "",
+    availableCouriers: Array.isArray(settings?.availableCouriers) ? settings.availableCouriers : [],
+    defaultCourier: settings?.defaultCourier || "Auto",
     defaultWeight: settings?.defaultWeight ?? 1,
     defaultInstructions: settings?.defaultInstructions || "",
     shipperName: settings?.shipperName || "",
@@ -40,8 +43,39 @@ export const action = async ({ request }) => {
     }
   }
 
+  if (form.get("intent") === "checkCouriers") {
+    const settings = await db.settings.findUnique({ where: { shop: session.shop } });
+    const apiKey = (form.get("instaworldApiKey") || settings?.instaworldApiKey || "").trim();
+    if (!apiKey) {
+      return { ok: false, error: "Please enter and save your InstaWorld API key before checking couriers." };
+    }
+    try {
+      const res = await detectAndSaveAvailableCouriers(session.shop, apiKey);
+      return {
+        ok: true,
+        couriersChecked: true,
+        availableCouriers: res.availableCouriers,
+        defaultCourier: res.defaultCourier,
+      };
+    } catch (err) {
+      console.error("[settings:checkCouriers] failed:", err.message);
+      return { ok: false, error: err.message || "Failed to check available couriers." };
+    }
+  }
+
+  const currentSettings = await db.settings.findUnique({ where: { shop: session.shop } });
+  const newApiKey = (form.get("instaworldApiKey") || "").trim() || null;
+  const apiKeyChanged = newApiKey && newApiKey !== currentSettings?.instaworldApiKey;
+
+  let defaultCourier = form.get("defaultCourier") || currentSettings?.defaultCourier || "Auto";
+  const availableCouriers = Array.isArray(currentSettings?.availableCouriers) ? currentSettings.availableCouriers : [];
+  if (defaultCourier !== "Auto" && !availableCouriers.includes(defaultCourier)) {
+    defaultCourier = "Auto";
+  }
+
   const settingsData = {
-    instaworldApiKey: form.get("instaworldApiKey") || null,
+    instaworldApiKey: newApiKey,
+    defaultCourier,
     defaultWeight: parseFloat(form.get("defaultWeight")) || 1,
     defaultInstructions: form.get("defaultInstructions") || null,
     shipperName: form.get("shipperName") || null,
@@ -54,6 +88,14 @@ export const action = async ({ request }) => {
     update: settingsData,
     create: { shop: session.shop, ...settingsData },
   });
+
+  if (apiKeyChanged && newApiKey) {
+    try {
+      await detectAndSaveAvailableCouriers(session.shop, newApiKey);
+    } catch (e) {
+      console.warn("[settings:apiKeyChanged] auto courier detection failed:", e.message);
+    }
+  }
 
   return { ok: true };
 };
@@ -182,9 +224,13 @@ export default function SettingsPage() {
   const data = useLoaderData();
   const fetcher = useFetcher();
   const citySyncFetcher = useFetcher();
+  const courierFetcher = useFetcher();
   const [saved, setSaved] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const prevState = useRef("idle");
+
+  const availableCouriers = courierFetcher.data?.availableCouriers || data.availableCouriers || [];
+  const defaultCourier = courierFetcher.data?.defaultCourier || data.defaultCourier || "Auto";
 
   useEffect(() => {
     if (prevState.current !== "idle" && fetcher.state === "idle" && fetcher.data?.ok) {
@@ -196,6 +242,7 @@ export default function SettingsPage() {
   }, [fetcher.state, fetcher.data]);
 
   const isSubmitting = fetcher.state !== "idle";
+  const isCheckingCouriers = courierFetcher.state !== "idle";
 
   return (
     <div style={S.page}>
@@ -204,7 +251,7 @@ export default function SettingsPage() {
         <div style={S.header}>
           <h2 style={S.title}>InstaWorld Integration</h2>
           <p style={S.subtitle}>
-            Configure your InstaWorld courier credentials and booking defaults
+            Configure your InstaWorld courier credentials, available couriers, and booking defaults
           </p>
         </div>
 
@@ -232,6 +279,77 @@ export default function SettingsPage() {
             </div>
             <p style={S.hint}>
               Used for authentication on every API call. Determines your pickup location and courier assignment.
+            </p>
+          </div>
+
+          {/* Courier Availability */}
+          <div style={S.field}>
+            <label style={S.label}>InstaWorld Courier Availability</label>
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "8px" }}>
+              <button
+                type="button"
+                disabled={isCheckingCouriers}
+                onClick={() => courierFetcher.submit({ intent: "checkCouriers" }, { method: "POST" })}
+                style={isCheckingCouriers ? S.btnSaveDisabled : { ...S.btnSave, background: "#fff", color: "#202223", border: "1px solid #c9cccf" }}
+              >
+                {isCheckingCouriers ? "Checking couriers…" : "Check Available Couriers"}
+              </button>
+              <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                {availableCouriers.length > 0 ? (
+                  availableCouriers.map((c) => (
+                    <span
+                      key={c}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: "14px",
+                        fontSize: "12px",
+                        fontWeight: "600",
+                        background: "#e3f1df",
+                        color: "#008060",
+                        border: "1px solid #b7e3bd",
+                      }}
+                    >
+                      ✓ {c}
+                    </span>
+                  ))
+                ) : (
+                  <span style={{ color: "#6d7175", fontSize: "13px" }}>
+                    No specific couriers detected yet
+                  </span>
+                )}
+              </div>
+            </div>
+            {courierFetcher.data?.ok && (
+              <p style={{ ...S.hint, color: "#008060" }}>
+                ✓ Checked couriers. Active: {availableCouriers.join(", ") || "None (Auto only)"}
+              </p>
+            )}
+            {courierFetcher.data?.ok === false && (
+              <p style={{ ...S.hint, color: "#d82c0d" }}>⚠ {courierFetcher.data.error}</p>
+            )}
+            <p style={S.hint}>
+              Checks which couriers have active credentials configured in your InstaWorld merchant account.
+              Only verified active couriers can be selected when booking shipments.
+            </p>
+          </div>
+
+          {/* Default Courier */}
+          <div style={S.field}>
+            <label style={S.label}>Default preferred courier</label>
+            <select
+              name="defaultCourier"
+              defaultValue={defaultCourier}
+              style={{ ...S.input, maxWidth: "260px" }}
+            >
+              <option value="Auto">Auto (InstaWorld Default)</option>
+              {availableCouriers.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <p style={S.hint}>
+              Pre-selected courier when opening the booking modal. Can be overridden per order.
             </p>
           </div>
 
