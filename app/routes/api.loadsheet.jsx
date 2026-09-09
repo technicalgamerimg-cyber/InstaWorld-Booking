@@ -1,6 +1,7 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { generateLoadsheetPdf } from "../utils/loadsheet.server";
+import { bookedCodValue } from "../utils/booking.server";
 
 export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -26,6 +27,7 @@ export const action = async ({ request }) => {
         trackingNumber: true,
         totalPrice: true,
         financialStatus: true,
+        lastBookingAmount: true,
         createdAt: true,
         lineItems: true,
       },
@@ -45,8 +47,7 @@ export const action = async ({ request }) => {
 
   const date = new Date().toISOString().slice(0, 10);
   const filename = `loadsheet-${date}.pdf`;
-  const totalCOD = orders.reduce((sum, o) =>
-    sum + (o.financialStatus === "paid" ? 0 : Number(o.totalPrice || 0)), 0);
+  const totalCOD = orders.reduce((sum, o) => sum + bookedCodValue(o), 0);
 
   await db.loadsheet.create({
     data: {

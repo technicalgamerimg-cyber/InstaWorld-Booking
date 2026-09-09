@@ -7,6 +7,16 @@ import pLimit from "p-limit";
 import { cancelShipment } from "../utils/instaworld.server";
 const PAGE_SIZE = 50;
 
+// Mirrors bookedCodValue in utils/booking.server.js — duplicated (not imported)
+// because this file's default export renders client-side, and booking.server.js
+// pulls in Prisma/Node-only code that can't ship to the browser bundle.
+function bookedCodValue(order) {
+  if (order.lastBookingAmount !== null && order.lastBookingAmount !== undefined) {
+    return order.lastBookingAmount;
+  }
+  return order.financialStatus === "paid" ? 0 : parseFloat(order.totalPrice || "0");
+}
+
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
 export const loader = async ({ request }) => {
@@ -39,6 +49,7 @@ export const loader = async ({ request }) => {
           trackingNumber: true,
           courierName: true,
           shopifyFulfillmentId: true,
+          lastBookingAmount: true,
           createdAt: true,
         },
       }),
@@ -527,7 +538,7 @@ export default function ShipmentsPage() {
               </thead>
               <tbody>
                 {filtered.map((order) => {
-                  const cod = order.financialStatus === "paid" ? "0" : (order.totalPrice || "0");
+                  const cod = bookedCodValue(order);
                   const isSelected = selected.has(order.id);
                   const bookedDate = new Date(order.createdAt).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
 

@@ -150,6 +150,20 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
   return { id: order.id, trackingNumber: result.tracking_number };
 }
 
+// What to display as the COD figure for an order that's already booked (Shipments
+// page, dispatch loadsheets) — must be the amount actually sent to InstaWorld
+// (lastBookingAmount), not a recomputation from the DB's plain totalPrice. Those can
+// legitimately differ (a merchant COD override, or totalOutstandingSet differing from
+// totalPrice at booking time due to a partial payment/refund) — showing totalPrice
+// there would tell a rider to collect the wrong amount. Falls back to the pre-fix
+// heuristic only for orders booked before lastBookingAmount existed.
+export function bookedCodValue(order) {
+  if (order.lastBookingAmount !== null && order.lastBookingAmount !== undefined) {
+    return order.lastBookingAmount;
+  }
+  return order.financialStatus === "paid" ? 0 : parseFloat(order.totalPrice || "0");
+}
+
 // The single engine all 4 booking gateways (web single/bulk, extension single/bulk)
 // must go through — "there should not be four different ways of deciding COD."
 //

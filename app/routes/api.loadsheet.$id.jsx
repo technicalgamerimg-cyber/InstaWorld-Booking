@@ -26,6 +26,7 @@ export const loader = async ({ request, params }) => {
         trackingNumber: true,
         totalPrice: true,
         financialStatus: true,
+        lastBookingAmount: true,
         createdAt: true,
         lineItems: true,
       },

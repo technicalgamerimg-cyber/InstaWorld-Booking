@@ -1,6 +1,7 @@
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import fs from "fs";
 import path from "path";
+import { bookedCodValue } from "./booking.server";
 
 const PAGE_W = 595;
 const PAGE_H = 842;
@@ -139,8 +140,9 @@ function drawRow(page, y, rowNum, order, fonts) {
   const bottom = y - ROW_H;
 
   const qty = order.lineItems?.reduce?.((s, i) => s + (i.quantity || 1), 0) || 1;
-  // Paid orders have no cash to collect on delivery
-  const codVal = order.financialStatus === "paid" ? 0 : Number(order.totalPrice || 0);
+  // The amount actually booked with InstaWorld, not a recomputation from totalPrice —
+  // see bookedCodValue for why those can legitimately differ.
+  const codVal = bookedCodValue(order);
 
   const cells = [
     String(rowNum),
@@ -196,9 +198,7 @@ export async function generateLoadsheetPdf(orders, settings) {
     logoImage = await pdfDoc.embedPng(logoBytes);
   } catch (_) {}
 
-  // Exclude paid orders from COD total — they've already been paid online
-  const totalCOD = orders.reduce((sum, o) =>
-    sum + (o.financialStatus === "paid" ? 0 : Number(o.totalPrice || 0)), 0);
+  const totalCOD = orders.reduce((sum, o) => sum + bookedCodValue(o), 0);
   const totalWeight = orders.length * (settings?.defaultWeight || 1);
 
   // First page with sender header
