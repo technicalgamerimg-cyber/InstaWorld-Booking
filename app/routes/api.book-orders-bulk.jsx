@@ -75,12 +75,20 @@ export const action = async ({ request }) => {
     return cors(Response.json({ ok: false, error: "Invalid request body" }, { status: 400 }));
   }
 
-  // Each item carries its own address/phone/city correction — a one-time override
+  // Each item carries its own address/phone/city/courier correction — a one-time override
   // for this shipment only, same as the single-order admin action. Deduped by shopifyId.
   const itemsById = new Map();
   for (const item of Array.isArray(body.items) ? body.items : []) {
     const shopifyId = parseOrderGid(item?.orderId);
-    if (shopifyId) itemsById.set(shopifyId.toString(), { shopifyId, address: item.address, phone: item.phone, city: item.city });
+    if (shopifyId) {
+      itemsById.set(shopifyId.toString(), {
+        shopifyId,
+        address: item.address,
+        phone: item.phone,
+        city: item.city,
+        courier: item.courier || null,
+      });
+    }
   }
   const items = [...itemsById.values()];
   if (items.length === 0) {
@@ -100,7 +108,7 @@ export const action = async ({ request }) => {
     : null;
   const courier = body.courier || null;
 
-  const bookOne = ({ shopifyId, address, phone, city }) =>
+  const bookOne = ({ shopifyId, address, phone, city, courier: itemCourier }) =>
     bookOrderWithLiveSync({
       admin,
       shop: session.shop,
@@ -109,7 +117,7 @@ export const action = async ({ request }) => {
       weightGrams,
       defaultWeightKg: settings.defaultWeight ?? 1,
       customCod,
-      courier,
+      courier: itemCourier || courier,
       instructions: body.instructions || null,
       defaultInstructions: settings.defaultInstructions,
       addressOverride: address,

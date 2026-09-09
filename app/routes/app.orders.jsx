@@ -279,7 +279,7 @@ export const action = async ({ request }) => {
         weightGrams,
         defaultWeightKg,
         customCod,
-        courier,
+        courier: override.courier || courier,
         instructions,
         defaultInstructions: shopSettings.defaultInstructions,
         addressOverride: override.address,
@@ -787,11 +787,25 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
       address: o.address || "",
       phone: o.phone || "",
       cityId: findCityId(cities, o.city),
+      courier: defaultCourier,
     }]))
   );
   const [showOnlyIncomplete, setShowOnlyIncomplete] = useState(false);
 
   const setShare = (k) => (e) => setShared((f) => ({ ...f, [k]: e.target.value }));
+  const handleSharedCourierChange = (e) => {
+    const val = e.target.value;
+    setShared((f) => ({ ...f, courier: val }));
+    // Also update all individual order rows to match this new default
+    setRows((prev) => {
+      const updated = {};
+      for (const [id, r] of Object.entries(prev)) {
+        updated[id] = { ...r, courier: val };
+      }
+      return updated;
+    });
+  };
+
   const setRow = (id, k) => (e) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], [k]: e.target.value } }));
   const setRowCity = (id) => (cityId) =>
@@ -806,7 +820,7 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ background: "#fff", borderRadius: "10px", width: "760px", maxWidth: "95vw", maxHeight: "90vh", boxShadow: "0 8px 32px rgba(0,0,0,0.2)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ background: "#fff", borderRadius: "10px", width: "820px", maxWidth: "95vw", maxHeight: "90vh", boxShadow: "0 8px 32px rgba(0,0,0,0.2)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {/* Header */}
         <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid #e1e3e5", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ fontWeight: "700", fontSize: "16px" }}>
@@ -837,10 +851,10 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
               />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Courier — all</label>
+              <label style={{ display: "block", fontSize: "12px", fontWeight: "600", marginBottom: "4px", color: "#202223" }}>Courier — set for all</label>
               <select
                 value={shared.courier}
-                onChange={setShare("courier")}
+                onChange={handleSharedCourierChange}
                 style={{ width: "100%", border: "1px solid #c9cccf", borderRadius: "6px", padding: "7px 10px", fontSize: "14px", boxSizing: "border-box", background: "#fff" }}
               >
                 <option value="Auto">Auto (InstaWorld Default)</option>
@@ -864,7 +878,7 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "8px" }}>
             <div style={{ fontSize: "12px", fontWeight: "600", color: "#6d7175" }}>
-              Review and correct delivery address / phone / city before booking
+              Review and select individual courier, address, phone & city for each order:
             </div>
             {incompleteCount > 0 && (
               <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
@@ -909,7 +923,7 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
             <table style={S.table}>
               <thead>
                 <tr>
-                  {["Order", "Address *", "Phone *", "InstaWorld city *"].map((h) => (
+                  {["Order", "Address *", "Phone *", "InstaWorld city *", "Courier"].map((h) => (
                     <th key={h} style={S.th}>{h}</th>
                   ))}
                 </tr>
@@ -939,8 +953,30 @@ function BulkBookingModal({ orders, settings, cities, onClose, onConfirm }) {
                         style={{ width: "100%", border: rows[o.id]?.phone?.trim() ? "1px solid #c9cccf" : "1px solid #d82c0d", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", boxSizing: "border-box" }}
                       />
                     </td>
-                    <td style={{ ...S.td, minWidth: "170px" }}>
+                    <td style={{ ...S.td, minWidth: "160px" }}>
                       <CitySelect cities={cities} value={rows[o.id]?.cityId} onChange={setRowCity(o.id)} />
+                    </td>
+                    <td style={{ ...S.td, minWidth: "130px" }}>
+                      <select
+                        value={rows[o.id]?.courier ?? shared.courier}
+                        onChange={setRow(o.id, "courier")}
+                        style={{
+                          width: "100%",
+                          border: "1px solid #c9cccf",
+                          borderRadius: "6px",
+                          padding: "6px 8px",
+                          fontSize: "13px",
+                          boxSizing: "border-box",
+                          background: "#fff",
+                        }}
+                      >
+                        <option value="Auto">Auto (Default)</option>
+                        {availableCouriers.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
                     </td>
                   </tr>
                 ))}
@@ -1067,7 +1103,15 @@ export default function OrdersPage() {
   const handleConfirmBulkModal = (shared, rows) => {
     const ids = [...selected];
     const overrides = Object.fromEntries(
-      Object.entries(rows).map(([id, r]) => [id, { address: r.address, phone: r.phone, city: cityName(r.cityId) }])
+      Object.entries(rows).map(([id, r]) => [
+        id,
+        {
+          address: r.address,
+          phone: r.phone,
+          city: cityName(r.cityId),
+          courier: r.courier || shared.courier || "Auto",
+        },
+      ])
     );
     fetcher.submit(
       {

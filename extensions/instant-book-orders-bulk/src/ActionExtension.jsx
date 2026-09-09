@@ -134,10 +134,11 @@ function Extension() {
         const json = await res.json();
         if (!json.ok) throw new Error(json.error || "Failed to load orders");
 
+        const defCourier = json.settings.defaultCourier || "Auto";
         setOrders(json.orders);
         setHasApiKey(json.settings.hasApiKey);
         setAvailableCouriers(json.settings.availableCouriers || []);
-        setCourier(json.settings.defaultCourier || "Auto");
+        setCourier(defCourier);
         setWeight(String(Math.round((json.settings.defaultWeight || 1) * 1000)));
         setInstructions(json.settings.defaultInstructions || "");
         setCities(json.cities || []);
@@ -146,6 +147,7 @@ function Extension() {
             address: o.address || "",
             phone: o.phone || "",
             cityId: findCityId(json.cities || [], o.city),
+            courier: defCourier,
           }])
         ));
         setPhase("ready");
@@ -164,6 +166,18 @@ function Extension() {
     return !r?.cityId || !r?.address?.trim() || !r?.phone?.trim();
   }).length;
 
+  const handleSharedCourierChange = (e) => {
+    const val = e.currentTarget.value;
+    setCourier(val);
+    setRows((prev) => {
+      const updated = {};
+      for (const [id, r] of Object.entries(prev)) {
+        updated[id] = { ...r, courier: val };
+      }
+      return updated;
+    });
+  };
+
   const setRow = (id, key) => (e) =>
     setRows((r) => ({ ...r, [id]: { ...r[id], [key]: e.currentTarget.value } }));
   const setRowCity = (id) => (cityId) =>
@@ -178,6 +192,7 @@ function Extension() {
         address: rows[o.id]?.address,
         phone: rows[o.id]?.phone,
         city: cities.find((c) => String(c.id) === String(rows[o.id]?.cityId))?.name || "",
+        courier: rows[o.id]?.courier || courier,
       }));
       const res = await authedFetch("/api/book-orders-bulk", {
         method: "POST",
@@ -278,10 +293,10 @@ function Extension() {
           />
         </s-stack>
         <s-select
-          label={i18n.translate("courierLabel") || "Courier"}
-          details={i18n.translate("courierDetails") || "Applied to every order in this batch"}
+          label={i18n.translate("courierLabel") || "Courier (set for all)"}
+          details={i18n.translate("courierDetails") || "Sets default courier for this batch — can be customized per order below"}
           value={courier}
-          onInput={(e) => setCourier(e.currentTarget.value)}
+          onInput={handleSharedCourierChange}
         >
           <s-option value="Auto">Auto (InstaWorld Default)</s-option>
           {availableCouriers.map((c) => (
@@ -321,6 +336,18 @@ function Extension() {
                   onChange={setRowCity(o.id)}
                   label={i18n.translate("cityLabel")}
                 />
+                <s-select
+                  label={i18n.translate("orderCourierLabel") || "Courier"}
+                  value={rows[o.id]?.courier ?? courier}
+                  onInput={setRow(o.id, "courier")}
+                >
+                  <s-option value="Auto">Auto (Default)</s-option>
+                  {availableCouriers.map((c) => (
+                    <s-option key={c} value={c}>
+                      {c}
+                    </s-option>
+                  ))}
+                </s-select>
               </s-stack>
             </s-box>
           ))}
