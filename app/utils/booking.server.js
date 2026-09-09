@@ -49,7 +49,7 @@ export async function bookOrderShipment({ admin, order, apiKey, weightKg, codAmo
     consignee_address: address,
     consignee_city: city,
     amount: codAmount,
-    financial_status: order.financialStatus === "paid" ? "paid" : "cod",
+    financial_status: codAmount > 0 ? "cod" : "paid",
     remarks: instructions || "",
     items,
   };

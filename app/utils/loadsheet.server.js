@@ -153,7 +153,7 @@ function drawRow(page, y, rowNum, order, fonts) {
     order.name || "",
     String(qty),
     codVal === 0 ? "0.00" : codVal.toFixed(2),
-    "cod",
+    codVal > 0 ? "cod" : "paid",
   ];
 
   if (rowNum % 2 === 0) {
